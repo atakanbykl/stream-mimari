@@ -33,3 +33,4 @@ Bu kurallar `stream-mimari` projesinde çalışan yapay zeka ajanı ve geliştir
   - **Kurallar (Rules):** Kodlama ve mimari standartları güncellendiğinde `GEMINI.md` veya `.agents/rules/` dosyaları güncellenmelidir.
   - **Kancalar (Hooks):** İşlemler öncesi/sonrası otomatik doğrulama, derleme veya biçimlendirme gerektiğinde `.agents/hooks.json` tanımlanmalıdır.
   - **MCP:** NATS CLI, Kafka veya harici servis araçları bağlandığında `.agents/mcp_config.json` güncellenmelidir.
+  - **Hafıza Dosyası (Memory Log):** Projede yapılan mimari değişiklikler, eklenen özellikler ve yol haritası `MEMORY.md` dosyasında güncel tutulmalıdır.
