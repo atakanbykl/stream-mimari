@@ -1,6 +1,7 @@
 package com.stream.base;
 
 import com.google.gson.Gson;
+import com.stream.base.config.NodeConfig;
 import io.nats.client.*;
 import io.nats.client.api.*;
 
@@ -25,13 +26,15 @@ import java.util.function.Consumer;
  * 6. Topic Ad Alanı Kalkanı (Validation): core.> ve stream.> konularının karışmasını önleme.
  * 7. Gson tabanlı otomatik JSON serileştirme / deserileştirme.
  * 8. start() ve stop() ile thread-safe yaşam döngüsü ve kaynak temizliği.
+ * 9. Merkezi ve hiyerarşik konfigürasyon yönetimi (NodeConfig).
  */
 public abstract class BaseNode {
 
     public static final String DEFAULT_STREAM_NAME = "STREAM_MIMARI";
     public static final String DEFAULT_STREAM_SUBJECT = "stream.>";
 
-    private final String nodeId;
+    protected final String nodeId;
+    protected final NodeConfig config;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private String natsUrl = "nats://127.0.0.1:4222";
     private boolean autoConnect = true;
@@ -56,12 +59,23 @@ public abstract class BaseNode {
     private final Gson gson = new Gson();
 
     public BaseNode(String nodeId) {
-        this.nodeId = nodeId;
+        this(nodeId, (NodeConfig) null);
     }
 
     public BaseNode(String nodeId, String natsUrl) {
         this.nodeId = nodeId;
-        this.natsUrl = natsUrl;
+        this.config = NodeConfig.load(nodeId);
+        this.natsUrl = (natsUrl != null && !natsUrl.isBlank()) ? natsUrl : config.getString(NodeConfig.NATS_URL, "nats://127.0.0.1:4222");
+    }
+
+    public BaseNode(String nodeId, NodeConfig config) {
+        this.nodeId = nodeId;
+        this.config = (config != null) ? config : NodeConfig.load(nodeId);
+        this.natsUrl = this.config.getString(NodeConfig.NATS_URL, "nats://127.0.0.1:4222");
+    }
+
+    public NodeConfig getConfig() {
+        return config;
     }
 
     // =========================================================================
@@ -168,11 +182,15 @@ public abstract class BaseNode {
     }
 
     protected Options buildNatsOptions() {
+        int maxReconnects = config.getInt(NodeConfig.NATS_MAX_RECONNECTS, -1);
+        int reconnectWaitSec = config.getInt(NodeConfig.NATS_RECONNECT_WAIT_SEC, 2);
+        String connName = config.getString(NodeConfig.NATS_CONNECTION_NAME, nodeId);
+
         return new Options.Builder()
                 .server(natsUrl)
-                .connectionName(nodeId)
-                .maxReconnects(-1)
-                .reconnectWait(Duration.ofSeconds(2))
+                .connectionName(connName)
+                .maxReconnects(maxReconnects)
+                .reconnectWait(Duration.ofSeconds(reconnectWaitSec))
                 .connectionListener((conn, type) -> log("Bağlantı durumu: " + type))
                 .errorListener(new ErrorListener() {
                     @Override
@@ -250,7 +268,11 @@ public abstract class BaseNode {
      * Tüm 'stream.>' konularını kapsayan varsayılan mimari stream'ini (STREAM_MIMARI) oluşturur veya doğrular.
      */
     public StreamInfo ensureDefaultStream() throws IOException, JetStreamApiException {
-        return ensureStream(DEFAULT_STREAM_NAME, StorageType.File, DEFAULT_STREAM_SUBJECT);
+        String streamName = config.getString(NodeConfig.NATS_STREAM_NAME, DEFAULT_STREAM_NAME);
+        String subject = config.getString(NodeConfig.NATS_STREAM_SUBJECTS, DEFAULT_STREAM_SUBJECT);
+        String storage = config.getString(NodeConfig.NATS_STREAM_STORAGE, "file");
+        StorageType storageType = "memory".equalsIgnoreCase(storage) ? StorageType.Memory : StorageType.File;
+        return ensureStream(streamName, storageType, subject);
     }
 
     /**

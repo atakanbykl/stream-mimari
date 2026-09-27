@@ -61,15 +61,57 @@ public class App extends BaseNode {
     // GUI ve Dış Gözlem Dinleyicileri
     private final List<NodeActivityListener> activityListeners = new CopyOnWriteArrayList<>();
 
+    // Konfigürasyondan dinamik okunan topic ve ayar alanları
+    private final String topicTelemetry;
+    private final String topicStatus;
+    private final String topicAlerts;
+    private final int publishIntervalMs;
+
+    private final String topicCommands;
+    private final String topicRadar;
+    private final String topicWeather;
+    private final String topicProfile;
+
+    private final String topicMaintenance;
+
+    private final double radarEmergencyDistance;
+    private final double radarEmergencySpeed;
+
     // Periyodik yayınlayıcı zamanlayıcı
     private ScheduledExecutorService scheduler;
 
     public App() {
-        super("node-1");
+        this(null, null);
     }
 
     public App(String natsUrl) {
-        super("node-1", natsUrl);
+        this(natsUrl, null);
+    }
+
+    public App(String natsUrl, com.stream.base.config.NodeConfig customConfig) {
+        super("node-1", (customConfig != null) ? customConfig : com.stream.base.config.NodeConfig.load("node-1"));
+
+        // 1. ZORUNLU DIŞ DOSYA KONTROLÜ (Dosya yoksa kullanıcıya modal popup açıp kapatır)
+        config.requireExternalFile("node-1 (Otomobil ECU)");
+
+        // 2. TÜM ZORUNLU PARAMETRELERİN KATI DOĞRULAMASI
+        this.topicTelemetry = config.getRequiredTopic("publish.telemetry.topic", "core.");
+        this.topicStatus = config.getRequiredTopic("publish.status.topic", "stream.");
+        this.topicAlerts = config.getRequiredTopic("publish.alerts.topic", "core.");
+        this.publishIntervalMs = config.getRequiredInt("publish.interval.ms", 50, 60000);
+
+        this.topicCommands = config.getRequiredTopic("subscribe.commands.topic", "core.");
+        this.topicRadar = config.getRequiredTopic("subscribe.radar.topic", "core.");
+        this.topicWeather = config.getRequiredTopic("subscribe.weather.topic", "stream.");
+        this.topicProfile = config.getRequiredTopic("subscribe.profile.topic", "stream.");
+
+        this.topicMaintenance = config.getRequiredTopic("history.maintenance.topic", "stream.");
+
+        this.radarEmergencyDistance = config.getRequiredDouble("vehicle.radar.emergency.distance.meters", 1.0, 200.0);
+        this.radarEmergencySpeed = config.getRequiredDouble("vehicle.radar.emergency.speed.kmh", 0.0, 300.0);
+
+        // 3. EKSİK VEYA HATALI PARAMETRELERİ ENFORCE ET (Hata varsa kullanıcıya modal popup açıp kapatır)
+        config.validateAndEnforce("node-1 (Otomobil ECU)");
     }
 
     @Override
@@ -137,18 +179,21 @@ public class App extends BaseNode {
 
     private void setupSubscribers() throws Exception {
         // [Dinleyici 1 - Core]: Şoför komutları
-        subscribeCoreJson("core.car.commands", DriverCommand.class, this::handleDriverCommand);
+        subscribeCoreJson(topicCommands, DriverCommand.class, this::handleDriverCommand);
 
         // [Dinleyici 2 - Core]: Ön radar sensörü
-        subscribeCoreJson("core.car.sensors.radar", RadarSensorData.class, this::handleRadarSensor);
+        subscribeCoreJson(topicRadar, RadarSensorData.class, this::handleRadarSensor);
 
         // [Dinleyici 3 - JetStream Canlı]: Dış hava durumu (eski mesajları tekrar etmez)
-        subscribeStreamLiveJson("stream.weather.current", WeatherCondition.class, this::handleWeatherUpdate, true);
+        boolean weatherAutoAck = config.getBoolean("subscribe.weather.auto.ack", true);
+        subscribeStreamLiveJson(topicWeather, WeatherCondition.class, this::handleWeatherUpdate, weatherAutoAck);
 
         // [Dinleyici 4 - JetStream Canlı]: Şoför sürüş modu profili
-        subscribeStreamLiveJson("stream.driver.profile", DriverProfile.class, this::handleDriverProfile, true);
+        boolean profileAutoAck = config.getBoolean("subscribe.profile.auto.ack", true);
+        subscribeStreamLiveJson(topicProfile, DriverProfile.class, this::handleDriverProfile, profileAutoAck);
 
-        log("4 farklı topic başarıyla dinlemeye alındı.");
+        log(String.format("4 farklı topic konfigürasyondan başarıyla dinlemeye alındı: [%s, %s, %s, %s]",
+                topicCommands, topicRadar, topicWeather, topicProfile));
     }
 
     /**
@@ -156,7 +201,7 @@ public class App extends BaseNode {
      */
     public void handleDriverCommand(DriverCommand cmd) {
         log(String.format("[İŞ MANTIĞI - KOMUT] Sürüş komutu alındı: %s (Kaynak: %s)", cmd.action, cmd.source));
-        fireMessageReceived("core.car.commands", "NATS Core", cmd);
+        fireMessageReceived(topicCommands, "NATS Core", cmd);
 
         switch (cmd.action) {
             case "ACCELERATE" -> {
@@ -183,12 +228,12 @@ public class App extends BaseNode {
 
     /**
      * Handler 2 (Core): Ön radar sensörü verisini işler.
-     * İŞ MANTIĞI: Mesafe < 20m ve hız > 30 km/h ise acil otomatik fren devreye girer!
+     * İŞ MANTIĞI: Mesafe < radarEmergencyDistance ve hız > radarEmergencySpeed ise acil otomatik fren devreye girer!
      */
     public void handleRadarSensor(RadarSensorData radar) {
-        fireMessageReceived("core.car.sensors.radar", "NATS Core", radar);
+        fireMessageReceived(topicRadar, "NATS Core", radar);
 
-        if (radar.obstacleDetected && radar.distanceMeters < 20.0 && currentSpeedKmh > 30.0) {
+        if (radar.obstacleDetected && radar.distanceMeters < radarEmergencyDistance && currentSpeedKmh > radarEmergencySpeed) {
             log(String.format("⚠️ [KRİTİK GÜVENLİK İKAZI] Ön tampon radarı engel tespit etti! Mesafe: %.1fm", radar.distanceMeters));
 
             // Acil durum frenlemesi (Emergency Braking)
@@ -199,8 +244,8 @@ public class App extends BaseNode {
             // P3 Konusu: Anlık Core İkaz yayınla
             AlertData alert = new AlertData("EMERGENCY_BRAKE", "CRITICAL",
                     String.format("Çarpışma önleyici acil fren devrede! Kalan mesafe: %.1f metre", radar.distanceMeters));
-            publishCoreJson("core.car.alerts", alert);
-            fireMessageSent("core.car.alerts", "NATS Core", alert);
+            publishCoreJson(topicAlerts, alert);
+            fireMessageSent(topicAlerts, "NATS Core", alert);
         }
         fireStateChanged();
     }
@@ -212,13 +257,13 @@ public class App extends BaseNode {
     public void handleWeatherUpdate(WeatherCondition weather, Message msg) {
         this.currentWeather = weather;
         log(String.format("[İŞ MANTIĞI - HAVA DURUMU] Güncel yol koşulu: %s, Kayganlık: %b", weather.condition, weather.slipperyRoad));
-        fireMessageReceived("stream.weather.current", "JetStream", weather);
+        fireMessageReceived(topicWeather, "JetStream", weather);
 
         if (weather.slipperyRoad || "ICY".equals(weather.condition)) {
             log("Yol kaygan: ESP çekiş kontrolü maksimum güvenlik moduna geçirildi.");
             AlertData espAlert = new AlertData("ESP_ACTIVE", "MEDIUM", "Kaygan yol: Çekiş kontrolü (ESP) devrede.");
-            publishCoreJson("core.car.alerts", espAlert);
-            fireMessageSent("core.car.alerts", "NATS Core", espAlert);
+            publishCoreJson(topicAlerts, espAlert);
+            fireMessageSent(topicAlerts, "NATS Core", espAlert);
         }
         fireStateChanged();
     }
@@ -230,7 +275,7 @@ public class App extends BaseNode {
         this.activeProfile = profile;
         log(String.format("[İŞ MANTIĞI - PROFİL] Sürüş modu değişti: %s, Maksimum Hız Sınırı: %.0f km/h",
                 profile.mode, profile.speedLimitKmh));
-        fireMessageReceived("stream.driver.profile", "JetStream", profile);
+        fireMessageReceived(topicProfile, "JetStream", profile);
         fireStateChanged();
     }
 
@@ -239,14 +284,16 @@ public class App extends BaseNode {
     // =========================================================================
 
     /**
-     * JetStream geçmiş hafızasından aracın son bakım durumunu ('stream.car.maintenance') sorgular.
-     * İŞ MANTIĞI: Balata sağlığı < %25 veya yağ ömrü < %20 ise gösterge paneline bakım ikazı düşürür.
+     * JetStream geçmiş hafızasından aracın son bakım durumunu (topicMaintenance) sorgular.
      */
     public void checkHistoricalMaintenance() {
-        log("Geçmiş hafızasından son bakım ve servis kaydı sorgulanıyor (Topic: stream.car.maintenance)...");
+        log("Geçmiş hafızasından son bakım ve servis kaydı sorgulanıyor (Topic: " + topicMaintenance + ")...");
 
         Optional<StreamRecord<MaintenanceRecord>> recordOpt =
-                getLastMessageRecord("stream.car.maintenance", MaintenanceRecord.class);
+                getLastMessageRecord(topicMaintenance, MaintenanceRecord.class);
+
+        double minBrakePad = config.getDouble("vehicle.maintenance.min.brakepad.percent", 25.0);
+        double minOilLife = config.getDouble("vehicle.maintenance.min.oillife.percent", 20.0);
 
         if (recordOpt.isPresent()) {
             StreamRecord<MaintenanceRecord> record = recordOpt.get();
@@ -254,28 +301,28 @@ public class App extends BaseNode {
             log(String.format("Geçmiş bakım kaydı bulundu [Kayıt Zamanı: %s, Sıra: %d]: %s",
                     record.getTimestamp(), record.getSequence(), maint));
 
-            fireHistoricalRetrieved("stream.car.maintenance", record.getSequence(), record.getTimestamp().toString(), maint);
+            fireHistoricalRetrieved(topicMaintenance, record.getSequence(), record.getTimestamp().toString(), maint);
 
             // İş Mantığı Değerlendirmesi
-            if (maint.brakePadHealthPercent < 25.0 || maint.oilLifePercent < 20.0 || !maint.inspectionPassed) {
+            if (maint.brakePadHealthPercent < minBrakePad || maint.oilLifePercent < minOilLife || !maint.inspectionPassed) {
                 maintenanceWarningActive = true;
                 log("⚠️ [DİKKAT] Geçmiş kayıtlara göre fren balatası veya motor yağı kritik eşikte!");
                 AlertData alert = new AlertData("MAINTENANCE_REQUIRED", "MEDIUM",
                         String.format("Servis zamanı: Balata %% %.0f, Yağ %% %.0f", maint.brakePadHealthPercent, maint.oilLifePercent));
-                publishCoreJson("core.car.alerts", alert);
-                fireMessageSent("core.car.alerts", "NATS Core", alert);
+                publishCoreJson(topicAlerts, alert);
+                fireMessageSent(topicAlerts, "NATS Core", alert);
             } else {
                 log("Mekanik sağlık durumu iyi. Sürüşe hazır.");
             }
         } else {
             log("Geçmişte kayıtlı bakım bilgisi bulunamadı (Cold Start). Varsayılan fabrika kaydı oluşturuluyor...");
-            fireHistoricalRetrieved("stream.car.maintenance", 0, "N/A", "Kayıt yok (Cold Start)");
+            fireHistoricalRetrieved(topicMaintenance, 0, "N/A", "Kayıt yok (Cold Start)");
 
             // İlk kez çalışan araç için geçmişe fabrika çıkış kaydı ekle
             MaintenanceRecord factoryDefault = new MaintenanceRecord(odometerKm, 98.0, 100.0, true, "Fabrika çıkışı ilk kontrol.");
             try {
-                publishStreamJson("stream.car.maintenance", factoryDefault);
-                fireMessageSent("stream.car.maintenance", "JetStream", factoryDefault);
+                publishStreamJson(topicMaintenance, factoryDefault);
+                fireMessageSent(topicMaintenance, "JetStream", factoryDefault);
                 log("Fabrika bakım kaydı geçmiş hafızasına işlendi.");
             } catch (Exception e) {
                 log("Bakım kaydı eklenirken hata: " + e.getMessage());
@@ -295,16 +342,17 @@ public class App extends BaseNode {
             return t;
         });
 
-        // Her 1 saniyede bir 3 farklı konuyu yayınla
-        scheduler.scheduleAtFixedRate(this::publishAllMetrics, 1, 1, TimeUnit.SECONDS);
-        log("Periyodik yayınlayıcı döngüsü başlatıldı (Aralık: 1 saniye).");
+        // Konfigürasyondan okunan periyotla 3 konuyu yayınla
+        scheduler.scheduleAtFixedRate(this::publishAllMetrics, publishIntervalMs, publishIntervalMs, TimeUnit.MILLISECONDS);
+        log(String.format("Periyodik yayınlayıcı döngüsü başlatıldı (Aralık: %d ms, Kaynak: %s).",
+                publishIntervalMs, config.getLoadedSource()));
     }
 
     /**
      * Belli aralıklarla tetiklenen ana yayın metodu:
-     * 1. core.car.telemetry (NATS Core)
-     * 2. stream.car.status (JetStream)
-     * 3. core.car.alerts (NATS Core)
+     * 1. topicTelemetry (NATS Core)
+     * 2. topicStatus (JetStream)
+     * 3. topicAlerts (NATS Core)
      */
     public void publishAllMetrics() {
         try {
@@ -318,27 +366,27 @@ public class App extends BaseNode {
             // YAYIN 1 (NATS Core): Canlı Telemetri
             // =================================================================
             TelemetryData telemetry = new TelemetryData(currentSpeedKmh, currentRpm, currentThrottle, currentGear);
-            publishCoreJson("core.car.telemetry", telemetry);
-            fireMessageSent("core.car.telemetry", "NATS Core", telemetry);
+            publishCoreJson(topicTelemetry, telemetry);
+            fireMessageSent(topicTelemetry, "NATS Core", telemetry);
 
             // =================================================================
             // YAYIN 2 (JetStream): Kalıcı Araç Durumu
             // =================================================================
             VehicleStatus status = new VehicleStatus(fuelPercent, batteryPercent, odometerKm, engineTempCelsius);
-            publishStreamJson("stream.car.status", status);
-            fireMessageSent("stream.car.status", "JetStream", status);
+            publishStreamJson(topicStatus, status);
+            fireMessageSent(topicStatus, "JetStream", status);
 
             // =================================================================
             // YAYIN 3 (NATS Core): Periyodik Güvenlik & İkaz Durumu
             // =================================================================
             if (maintenanceWarningActive) {
                 AlertData alert = new AlertData("MAINTENANCE_DUE", "LOW", "Servis periyodu yaklaştı.");
-                publishCoreJson("core.car.alerts", alert);
-                fireMessageSent("core.car.alerts", "NATS Core", alert);
+                publishCoreJson(topicAlerts, alert);
+                fireMessageSent(topicAlerts, "NATS Core", alert);
             } else if (fuelPercent < 15.0) {
                 AlertData alert = new AlertData("LOW_FUEL", "MEDIUM", "Yakıt seviyesi düşük (%%" + String.format("%.1f", fuelPercent) + ")");
-                publishCoreJson("core.car.alerts", alert);
-                fireMessageSent("core.car.alerts", "NATS Core", alert);
+                publishCoreJson(topicAlerts, alert);
+                fireMessageSent(topicAlerts, "NATS Core", alert);
             }
 
             log(String.format("[YAYIN TAMAMLANDI] %s | %s", telemetry, status));
@@ -381,6 +429,17 @@ public class App extends BaseNode {
     public DriverProfile getActiveProfile() { return activeProfile; }
     public WeatherCondition getCurrentWeather() { return currentWeather; }
     public boolean isMaintenanceWarningActive() { return maintenanceWarningActive; }
+
+    // Konfigürasyondan okunan topic getter'ları
+    public String getTopicTelemetry() { return topicTelemetry; }
+    public String getTopicStatus() { return topicStatus; }
+    public String getTopicAlerts() { return topicAlerts; }
+    public String getTopicCommands() { return topicCommands; }
+    public String getTopicRadar() { return topicRadar; }
+    public String getTopicWeather() { return topicWeather; }
+    public String getTopicProfile() { return topicProfile; }
+    public String getTopicMaintenance() { return topicMaintenance; }
+    public int getPublishIntervalMs() { return publishIntervalMs; }
 
     // =========================================================================
     // ANA ÇALIŞTIRICI METOT (MAIN ENTRY POINT)

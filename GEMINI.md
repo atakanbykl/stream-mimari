@@ -38,3 +38,9 @@ Bu kurallar `stream-mimari` projesinde çalışan yapay zeka ajanı ve geliştir
   - **Kancalar (Hooks):** İşlemler öncesi/sonrası otomatik doğrulama, derleme veya biçimlendirme gerektiğinde `.agents/hooks.json` tanımlanmalıdır.
   - **MCP:** NATS CLI, Kafka veya harici servis araçları bağlandığında `.agents/mcp_config.json` güncellenmelidir.
   - **Hafıza Dosyası (Memory Log):** Projede yapılan mimari değişiklikler, eklenen özellikler ve yol haritası `MEMORY.md` dosyasında güncel tutulmalıdır.
+
+## 6. Dinamik Dış Konfigürasyon ve Katı Doğrulama Standartları (NodeConfig)
+- Hiçbir `node-*` servisinde NATS URL'i, Stream adı, Topic isimleri, yayın aralıkları veya eşik değerleri koda **hardcoded** gömülmemelidir.
+- Yapılandırmalar JAR içine gömülmemeli; derleme gerektirmeksizin düzenlenebilmesi için modül çalışma dizinindeki harici `application.properties` dosyasından okunmalıdır.
+- Çalışma zamanında (runtime) konfigürasyon dosyası bulunamazsa, okunamazsa veya parametreler eksik/hatalı/mimari kurallara (`core.` / `stream.`) aykırıysa, `ConfigErrorHandler` aracılığıyla kullanıcıya modal bir hata pop-up'ı (`JOptionPane`) gösterilmeli ve kullanıcı "Tamam" butonuna basana kadar beklenip ardından uygulama sonlandırılmalıdır.
+

@@ -50,7 +50,7 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
     private JTextArea txtLiveLog;
 
     public Node1Dashboard(App app) {
-        super("node-1 | Otomobil ECU Mesaj Akış ve Kontrol Paneli");
+        super(String.format("node-1 | Otomobil ECU Mesaj Akış ve Kontrol Paneli (%s)", app.getConfig().getLoadedSource()));
         this.app = app;
 
         // Sistem Look and Feel uygula
@@ -215,7 +215,7 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         btnAccelerate.addActionListener(e -> {
             DriverCommand cmd = new DriverCommand("ACCELERATE", 40.0, "GUI-Pedal");
             if (app.isConnected()) {
-                app.publishCoreJson("core.car.commands", cmd);
+                app.publishCoreJson(app.getTopicCommands(), cmd);
             } else {
                 app.handleDriverCommand(cmd);
             }
@@ -225,7 +225,7 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         btnBrake.addActionListener(e -> {
             DriverCommand cmd = new DriverCommand("BRAKE", 50.0, "GUI-Fren");
             if (app.isConnected()) {
-                app.publishCoreJson("core.car.commands", cmd);
+                app.publishCoreJson(app.getTopicCommands(), cmd);
             } else {
                 app.handleDriverCommand(cmd);
             }
@@ -235,7 +235,7 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         btnRadar.addActionListener(e -> {
             RadarSensorData radar = new RadarSensorData(15.0, -25.0, true);
             if (app.isConnected()) {
-                app.publishCoreJson("core.car.sensors.radar", radar);
+                app.publishCoreJson(app.getTopicRadar(), radar);
             } else {
                 app.handleRadarSensor(radar);
             }

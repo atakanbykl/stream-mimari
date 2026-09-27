@@ -142,6 +142,30 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
     - **Alt Panel:** Hızlı simülasyon butonları (Gaz ver, Fren yap, Radar testi, Geçmişi çek, Manuel yayınla, Temizle).
   - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java): Başlatılırken masaüstü ortamında (`!GraphicsEnvironment.isHeadless()`) GUI'yi otomatik açacak şekilde bağlandı.
 
+### [Adım 13] Merkezi ve Hiyerarşik Konfigürasyon Yönetimi (NodeConfig)
+- **Hedef:** Tüm NATS bağlantı ayarları (url, reconnection), Stream tanımları, yayınlanan (publish) ve dinlenen (subscribe) topic isimleri, periyotlar ve eşik değerlerinin koda hardcoded gömülmesini önlemek; harici/dahili dosyalardan dinamik okunmasını sağlamak.
+- **Eklenen Bileşenler:**
+  - [`NodeConfig.java`](./base/src/main/java/com/stream/base/config/NodeConfig.java): Hiyerarşik konfigürasyon yöneticisi:
+    - Öncelik Sırası: `System Properties (-D)` > `Ortam Değişkenleri (ENV)` > `Dış Dosya (application.properties)` > `Classpath İçi (src/main/resources)` > `Varsayılanlar (Default fallback)`.
+    - Tip güvenli metotlar: `getString`, `getInt`, `getLong`, `getDouble`, `getBoolean`, `getStringList`.
+  - [`BaseNode.java`](./base/src/main/java/com/stream/base/BaseNode.java): `NodeConfig config` entegrasyonu sağlandı. `buildNatsOptions()` ve `ensureDefaultStream()` ayarları konfigürasyondan dinamik çekilecek şekilde güncellendi.
+  - [`application.properties`](./node-1/src/main/resources/application.properties): `node-1` için NATS URL'i, Stream adı, 3 yayın topic'i, 4 dinleme topic'i, 1 geçmiş topic'i, yayın periyodu (1000ms) ve araç güvenlik eşikleri dosyaya aktarıldı.
+  - [`application.properties`](./node-1/application.properties): Projeyi yeniden derlemeye gerek kalmadan anlık topic ve sunucu değiştirebilmek için çalışma dizini kopyası hazırlandı.
+  - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java) ve [`Node1Dashboard.java`](./node-1/src/main/java/com/stream/node1/gui/Node1Dashboard.java): Tüm hardcoded string'ler kaldırılarak `config` değişkenlerine bağlandı.
+  - [`GEMINI.md`](./GEMINI.md) & [`SKILL.md`](./.agents/skills/stream-node-creator/SKILL.md): Kural 6 ve yeni düğüm üretim şablonu güncellendi.
+
+### [Adım 14] Tekil Dış Dosya (External File) ve Modal Hata Diyaloglu Doğrulama Mekanizması
+- **Hedef:** Konfigürasyon dosyasını tamamen derleme gerektirmeyen tek bir dış dosya (`node-1/application.properties`) haline getirmek; gömülü classpath kaynaklarını silmek. Çalışma zamanında config dosyası yoksa, okunamazsa veya parametreler eksik/hatalıysa kullanıcıyı modal pop-up pencere ile uyarıp "Tamam" tıklandıktan sonra uygulamayı sonlandırmak.
+- **Yapılan İşlemler:**
+  - **Dahili Kaynak Temizliği:** `node-1/src/main/resources/application.properties` tamamen silindi.
+  - **Harici Dosya Güvencesi:** Yalnızca çalışma dizininde bulunan `node-1/application.properties` geçerli kılındı. Parametre değişiklikleri Maven derlemesi gerektirmeksizin bir sonraki çalıştırmada doğrudan devreye girer.
+  - **Katı Doğrulama ve Hata Yakalama:**
+    - [`ConfigValidationException.java`](./base/src/main/java/com/stream/base/config/ConfigValidationException.java) geliştirildi.
+    - [`ConfigErrorHandler.java`](./base/src/main/java/com/stream/base/config/ConfigErrorHandler.java) geliştirildi: Masaüstü ortamında `JOptionPane.showMessageDialog` ile bloklayıcı modal hata uyarısı gösterir, kullanıcı "Tamam" diyene kadar bekler ve ardından `System.exit(1)` çağırır. Test ortamları için `exitOnFatalError` ve `suppressDialogForTesting` bayrakları sağlandı.
+    - [`NodeConfig.java`](./base/src/main/java/com/stream/base/config/NodeConfig.java): Sadece dış dosya sistemini tarayacak şekilde güncellendi. `requireExternalFile(title)`, `getRequiredTopic(key, prefix)`, `getRequiredInt(key, min, max)`, `getRequiredDouble(key, min, max)`, `getRequiredBoolean(key)` ve `validateAndEnforce(title)` metotları eklendi.
+    - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java): Başlatılırken dış dosyanın varlığını ve tüm 8 topic'in (`core.` / `stream.` mimari standartları) ve eşik değerlerinin doğrulanmasını zorunlu kıldı.
+  - **Birim Testleri:** `NodeConfigTest` ve `AppTest` güncellendi, 20 birim testinin tamamı başarıyla (`BUILD SUCCESS`) geçti.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları
@@ -152,13 +176,18 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
    - JetStream aboneliklerinde `autoAck=false` açıldıysa iş mantığı sonunda `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile mesaj kuyrukta tutulmalıdır.
 3. **JSON Serileştirme:**
    - Dış bağımlılık eklemek yerine `BaseNode` içindeki `toJson(...)` ve `fromJson(...)` metotları kullanılmalıdır.
-4. **Node Kapatma:**
+4. **Konfigürasyon Yönetimi:**
+   - Topic adları, NATS URL'leri ve periyotlar asla Java koduna hardcoded yazılmamalı; `BaseNode.getConfig()` (`NodeConfig`) ve dış `application.properties` üzerinden okunmalıdır.
+5. **Node Kapatma:**
    - Uygulama ana metotlarında `Runtime.getRuntime().addShutdownHook(new Thread(node::stop));` kullanılmalıdır.
 
 ---
 
 ## 5. Yol Haritası ve Gelecek İhtiyaçlar (Backlog)
 - [ ] Yeni düğümlerin (`node-2`, `node-3`, vb.) eklenmesi ve düğümler arası veri akışının test edilmesi.
-- [ ] NATS sunucusu ayarları ve ortam değişkenlerinden (Environment Variables / Config) NATS URL okuma desteği.
+- [x] NATS sunucusu ayarları ve ortam değişkenlerinden (Environment Variables / Config) NATS URL ve topic okuma desteği (`NodeConfig`).
+- [x] Tekil dış dosya tabanlı yapılandırma ve modal hata bildirimli çalışma zamanı doğrulama altyapısı.
 - [ ] Mesaj yeniden deneme (retry) ve Dead Letter Queue (DLQ) mekanizması.
 - [ ] İhtiyaç duyuldukça yeni Skill, Rule, Hook ve MCP entegrasyonlarının hafızaya ve projeye işlenmesi.
+
+

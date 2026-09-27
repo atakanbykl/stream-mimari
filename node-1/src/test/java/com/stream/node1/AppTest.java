@@ -79,4 +79,90 @@ public class AppTest {
         assertEquals("SPORT", app.getActiveProfile().mode);
         assertEquals(220.0, app.getActiveProfile().speedLimitKmh);
     }
+
+    @Test
+    public void testConfigDrivenTopics() {
+        App app = new App();
+        // application.properties dosyasından yüklenen topicler doğrulanır
+        assertEquals("core.car.telemetry", app.getTopicTelemetry());
+        assertEquals("stream.car.status", app.getTopicStatus());
+        assertEquals("core.car.alerts", app.getTopicAlerts());
+        assertEquals("core.car.commands", app.getTopicCommands());
+        assertEquals("core.car.sensors.radar", app.getTopicRadar());
+        assertEquals("stream.weather.current", app.getTopicWeather());
+        assertEquals("stream.driver.profile", app.getTopicProfile());
+        assertEquals("stream.car.maintenance", app.getTopicMaintenance());
+        assertEquals(1000, app.getPublishIntervalMs());
+    }
+
+    private java.util.Properties createFullValidProperties() {
+        java.util.Properties props = new java.util.Properties();
+        props.setProperty("publish.telemetry.topic", "core.car.telemetry");
+        props.setProperty("publish.status.topic", "stream.car.status");
+        props.setProperty("publish.alerts.topic", "core.car.alerts");
+        props.setProperty("publish.interval.ms", "1000");
+        props.setProperty("subscribe.commands.topic", "core.car.commands");
+        props.setProperty("subscribe.radar.topic", "core.car.sensors.radar");
+        props.setProperty("subscribe.weather.topic", "stream.weather.current");
+        props.setProperty("subscribe.profile.topic", "stream.driver.profile");
+        props.setProperty("history.maintenance.topic", "stream.car.maintenance");
+        props.setProperty("vehicle.radar.emergency.distance.meters", "20.0");
+        props.setProperty("vehicle.radar.emergency.speed.kmh", "30.0");
+        return props;
+    }
+
+    @Test
+    public void testCustomConfigInjection() {
+        java.util.Properties customProps = createFullValidProperties();
+        customProps.setProperty("publish.telemetry.topic", "core.custom.telemetry");
+        customProps.setProperty("publish.interval.ms", "500");
+
+        com.stream.base.config.NodeConfig customConfig = com.stream.base.config.NodeConfig.fromProperties("node-1", customProps);
+        App app = new App(null, customConfig);
+
+        assertEquals("core.custom.telemetry", app.getTopicTelemetry());
+        assertEquals(500, app.getPublishIntervalMs());
+    }
+
+    @Test
+    public void testConfigMissingPropertyFailsValidation() {
+        com.stream.base.config.ConfigErrorHandler.exitOnFatalError = false;
+        try {
+            java.util.Properties brokenProps = createFullValidProperties();
+            brokenProps.remove("publish.telemetry.topic");
+
+            com.stream.base.config.NodeConfig customConfig = com.stream.base.config.NodeConfig.fromProperties("node-1", brokenProps);
+            assertThrows(com.stream.base.config.ConfigValidationException.class, () -> new App(null, customConfig));
+        } finally {
+            com.stream.base.config.ConfigErrorHandler.exitOnFatalError = true;
+        }
+    }
+
+    @Test
+    public void testConfigInvalidTopicPrefixFailsValidation() {
+        com.stream.base.config.ConfigErrorHandler.exitOnFatalError = false;
+        try {
+            java.util.Properties brokenProps = createFullValidProperties();
+            brokenProps.setProperty("publish.status.topic", "wrongprefix.car.status");
+
+            com.stream.base.config.NodeConfig customConfig = com.stream.base.config.NodeConfig.fromProperties("node-1", brokenProps);
+            assertThrows(com.stream.base.config.ConfigValidationException.class, () -> new App(null, customConfig));
+        } finally {
+            com.stream.base.config.ConfigErrorHandler.exitOnFatalError = true;
+        }
+    }
+
+    @Test
+    public void testConfigOutOfRangeNumberFailsValidation() {
+        com.stream.base.config.ConfigErrorHandler.exitOnFatalError = false;
+        try {
+            java.util.Properties brokenProps = createFullValidProperties();
+            brokenProps.setProperty("publish.interval.ms", "10"); // Min 50 olmalı
+
+            com.stream.base.config.NodeConfig customConfig = com.stream.base.config.NodeConfig.fromProperties("node-1", brokenProps);
+            assertThrows(com.stream.base.config.ConfigValidationException.class, () -> new App(null, customConfig));
+        } finally {
+            com.stream.base.config.ConfigErrorHandler.exitOnFatalError = true;
+        }
+    }
 }

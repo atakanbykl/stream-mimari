@@ -31,12 +31,23 @@ node-X/
 ├── pom.xml
 ├── .gitignore
 ├── README.md
+├── nbactions.xml
+├── application.properties               <-- Dış yapılandırma dosyası (derleme gerektirmez)
 └── src/
-    ├── main/java/com/stream/nodeX/App.java
+    ├── main/
+    │   └── java/com/stream/nodeX/App.java
     └── test/java/com/stream/nodeX/AppTest.java
 ```
 
-### 3. `node-X/pom.xml` Dosyasını Oluşturma
+### 3. `node-X/application.properties` Dosyasını Oluşturma
+```properties
+nats.url=nats://127.0.0.1:4222
+nats.connection.name=node-X
+subscribe.commands.topic=core.nodeX.commands
+publish.events.topic=stream.nodeX.events
+```
+
+### 4. `node-X/pom.xml` Dosyasını Oluşturma
 Parent olarak `stream-mimari` referans verilmeli ve `base` bağımlılığı eklenmelidir:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -105,8 +116,8 @@ Parent olarak `stream-mimari` referans verilmeli ve `base` bağımlılığı ekl
 </project>
 ```
 
-### 4. `App.java` Sınıfını `BaseNode`'dan Extend Ederek Oluşturma
-Yeni düğüm doğrudan çalıştırılabilir bir `main(String[] args)` içerir ve çift katmanlı mimari standartlarına (NATS Core anlık + JetStream geçmiş hafızası) tam uyumlu olarak üretilir:
+### 5. `App.java` Sınıfını `BaseNode`'dan Extend Ederek Oluşturma
+Yeni düğüm doğrudan çalıştırılabilir bir `main(String[] args)` içerir, topic ve ayarlarını `config` nesnesinden çeker:
 ```java
 package com.stream.nodeX;
 
@@ -131,8 +142,13 @@ public class App extends BaseNode {
         }
     }
 
+    private final String commandsTopic;
+    private final String eventsTopic;
+
     public App() {
         super("node-X");
+        this.commandsTopic = config.getString("subscribe.commands.topic", "core.nodeX.commands");
+        this.eventsTopic = config.getString("publish.events.topic", "stream.nodeX.events");
     }
 
     @Override
@@ -142,18 +158,18 @@ public class App extends BaseNode {
         // 1. JetStream merkezi stream'ini garantiye al (allowDirect=true ile)
         ensureDefaultStream();
 
-        // 2. NATS Core: Minimum gecikmeli anlık komut dinleme
-        subscribeCore("core.nodeX.commands", msg -> {
+        // 2. NATS Core: Minimum gecikmeli anlık komut dinleme (config'den)
+        subscribeCore(commandsTopic, msg -> {
             log("Core komut mesajı alındı: " + new String(msg.getData()));
         });
 
         // 3. JetStream: Canlı yeni olayları dinleme (DeliverPolicy.New ile eski geçmişi tekrar etmez)
-        subscribeStreamLiveJson("stream.nodeX.events", NodeXData.class, (data, msg) -> {
+        subscribeStreamLiveJson(eventsTopic, NodeXData.class, (data, msg) -> {
             log("Canlı stream olayı yakalandı: " + data.status);
         }, true);
 
         // 4. Örnek: Geçmişten son durumu çekme (Direct Get)
-        Optional<StreamRecord<NodeXData>> lastState = getLastMessageRecord("stream.nodeX.events", NodeXData.class);
+        Optional<StreamRecord<NodeXData>> lastState = getLastMessageRecord(eventsTopic, NodeXData.class);
         lastState.ifPresent(rec -> log("Geçmişteki son durum: " + rec.getPayload().status));
     }
 
