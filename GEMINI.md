@@ -26,7 +26,8 @@ Bu kurallar `stream-mimari` projesinde çalışan yapay zeka ajanı ve geliştir
 - **Onaylama (ACK) Politikası:**
   - `autoAck = false` ile açılan JetStream aboneliklerinde mesaj işlendikten sonra mutlaka `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile yeniden kuyruğa alınmalıdır.
 
-## 4. Serileştirme ve JSON
+## 4. Serileştirme, JSON ve Ortak Model Kütüphanesi
+- Düğümler arası mesajlaşmada kullanılan tüm ortak veri modelleri/DTO'lar tek bir düğüme hapsedilmemeli, `base` modülü altındaki `com.stream.base.model` paketinde toplanmalıdır. Böylece tüm `node-*` servisleri `import com.stream.base.model.*;` ile aynı tip güvenli sözleşmeleri paylaşır.
 - JSON dönüşümleri için `BaseNode` içerisindeki dahili `toJson(...)` ve `fromJson(...)` metotları kullanılmalıdır.
 - Tip güvenli abonelikler için `subscribeCoreJson(...)`, `subscribeStreamLiveJson(...)` ve `getLastMessageJson(...)` tercih edilmelidir.
 

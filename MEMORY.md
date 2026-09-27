@@ -85,6 +85,34 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
   - `base/README.md` ve `node-1/README.md`: En güncel API ve servis rollerini yansıtacak şekilde revize edildi.
   - `BaseNodeTest.java`: Topic kalkanı ve stream çözümleme birim testleri eklendi.
 
+### [Adım 7] node-1 Otomobil (Connected Car ECU) Senaryosu Uygulaması
+- **Kapsam:** `node-1` servisi, akıllı bir otomobilin araç kontrol merkezini (ECU Gateway) simüle edecek şekilde kurgulandı:
+  - **3 Periyodik Yayın (Publish):**
+    1. `core.car.telemetry` (NATS Core): Canlı hız, RPM, gaz pedalı, vites.
+    2. `stream.car.status` (JetStream): Kalıcı yakıt, batarya, kilometre, motor sıcaklığı.
+    3. `core.car.alerts` (NATS Core): Acil durum, çarpışma önleme veya kritik ikazlar.
+  - **4 Dinlenen Konu (Subscribe):**
+    1. `core.car.commands` (NATS Core): Sürüş komutları (ACCELERATE, BRAKE).
+    2. `core.car.sensors.radar` (NATS Core): Ön radar sensörü mesafe verisi.
+    3. `stream.weather.current` (JetStream Canlı): Yol ve hava durumu (yağmur, buzlanma).
+    4. `stream.driver.profile` (JetStream Canlı): Sürüş modu (ECO, COMFORT, SPORT).
+  - **1 Geçmişten Çekilen Konu (Direct Get):**
+    - `stream.car.maintenance` (JetStream): Araç marş aldığında geçmişteki son yetkili servis ve balata/yağ sağlık kaydını (`MaintenanceRecord`) doğrudan çeker. Balata < %25 veya yağ < %20 ise servis ikazı oluşturur.
+  - **İş Mantığı:**
+    - Radar mesafesi < 20m ve hız > 30 km/h ise acil otomatik fren devreye girer ve ikaz yayınlar.
+    - Yol kaygansa ESP çekiş kontrolü aktif edilir.
+    - Sürüş moduna göre gaz tepkisi ölçeklenir.
+
+### [Adım 8] Ortak Obje / Model Kütüphanesinin `base` Modülüne Taşınması
+- **Hedef:** Veri modellerinin tek bir servise (`node-1`) hapsolmasını engellemek; tüm `node-*` projelerinin erişebileceği merkezi bir obje kütüphanesi kurmak.
+- **Taşınan Modeller (`com.stream.base.model.*`):**
+  - `TelemetryData`, `VehicleStatus`, `AlertData`, `DriverCommand`, `RadarSensorData`, `WeatherCondition`, `DriverProfile`, `MaintenanceRecord`.
+- **Entegrasyon:**
+  - Modeller `base/src/main/java/com/stream/base/model/` altına taşındı.
+  - `node-1`'deki eski paket temizlendi ve `import com.stream.base.model.*;` ile bağlandı.
+  - `GEMINI.md`, `SKILL.md` ve `base/README.md` kuralları güncellendi.
+  - Yeni oluşturulacak tüm düğümler (`node-2`, `node-3`, vb.) `base` bağımlılığı sayesinde bu modellere doğrudan erişebilir hale getirildi.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları

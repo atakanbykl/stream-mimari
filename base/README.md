@@ -49,3 +49,14 @@ Tüm `node-*` projelerinin extend edeceği çekirdek kütüphanedir.
 - `start()` / `stop()`: Thread-safe durum takibi ve bağlantı/abonelik temizliği.
 - `toJson()`, `fromJson()`: Dahili Gson desteği.
 - `log(message)`: `[nodeId] mesaj` formatında loglama.
+
+### 5. Ortak Model Kütüphanesi (`com.stream.base.model.*`)
+Tüm `node-*` projeleri `base` modülünü bağımlılık olarak aldığı için ortak veri sözleşmelerine doğrudan erişebilir:
+- `TelemetryData`: Canlı telemetri (hız, devir, gaz, vites).
+- `VehicleStatus`: Kalıcı durum (yakıt, batarya, kilometre, sıcaklık).
+- `AlertData`: Güvenlik ve acil fren ikazları.
+- `DriverCommand`: Şoför sürüş komutları (ACCELERATE, BRAKE).
+- `RadarSensorData`: Ön radar sensör mesafesi ve bağıl hız.
+- `WeatherCondition`: Canlı hava ve yol durumu.
+- `DriverProfile`: Sürüş modu profili (ECO, COMFORT, SPORT).
+- `MaintenanceRecord`: Geçmiş servis ve balata/yağ sağlık kaydı.
