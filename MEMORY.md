@@ -64,6 +64,18 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
 - [**`GEMINI.md`**](./GEMINI.md): Proje içi zorunlu kurallar dosyası. Tüm nodeların `BaseNode` extend etmesi, topic isimlendirmesi (`core.*`, `stream.*`) ve ihtiyaç halinde özelleştirmelerin güncellenmesi kuralı bağlandı.
 - [**`stream-node-creator` (Skill)**](./.agents/skills/stream-node-creator/SKILL.md): Kullanıcı *"node-2 oluştur"* dediğinde sıfırdan tüm modül iskeletini ve `BaseNode` entegrasyonunu otomatikleştiren beceri hazırlandı.
 
+### [Adım 5] Çift Katmanlı Mimari (NATS Core Hızı + JetStream Geçmiş Hafızası)
+- **Hedef:** NATS Core ile minimum gecikmeli mesajlaşma sağlarken, JetStream'i uygulamanın geçmiş hafızası (State Store) olarak kullanmak ve herhangi bir anda bir konunun son mesajını doğrudan çekebilmek (Last-by-Subject Direct Get).
+- **Risk Analizi:**
+  - `RetentionPolicy.WorkQueue` geçmişi sildiği için `RetentionPolicy.Limits` zorunlu kılındı.
+  - Tüketici (consumer) maliyetine girmeden son mesajı çekebilmek için `allowDirect(true)` zorunlu kılındı.
+  - Canlı dinleyicilerin eski mesajlarla boğulmaması için `subscribeStreamLive` (`DeliverPolicy.New`) geliştirildi.
+  - Boş konularda çökmemesi için `getLastMessage` metotları `Optional` dönecek şekilde tasarlandı.
+- **Eklenen Bileşenler:**
+  - `StreamRecord.java`: Payload, sequence, zaman damgası ve başlıkları taşıyan DTO.
+  - `BaseNode`: `getLastMessage`, `getLastMessageText`, `getLastMessageJson`, `getLastMessageRecord`, `subscribeStreamLive`, `subscribeStreamLiveJson`, `ensureDefaultStream`.
+  - `node-1`: Hem anlık komutları hem de kalıcı durum geçmişini simüle eden yeni `App.java`.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları

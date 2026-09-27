@@ -16,16 +16,33 @@ public class AppTest {
     }
 
     @Test
-    public void testSensorDataSerialization() {
+    public void testDeviceStateSerialization() {
         App app = new App();
-        App.SensorData sensorData = new App.SensorData("temp-sensor-1", 25.4);
+        App.DeviceState state = new App.DeviceState("drone-01", "READY", 98.2);
         
-        String json = app.toJson(sensorData);
+        String json = app.toJson(state);
         assertNotNull(json);
-        assertTrue(json.contains("temp-sensor-1"));
+        assertTrue(json.contains("drone-01"));
+        assertTrue(json.contains("READY"));
 
-        App.SensorData parsed = app.fromJson(json, App.SensorData.class);
-        assertEquals("temp-sensor-1", parsed.sensorId);
-        assertEquals(25.4, parsed.temperature);
+        App.DeviceState parsed = app.fromJson(json, App.DeviceState.class);
+        assertEquals("drone-01", parsed.deviceId);
+        assertEquals("READY", parsed.status);
+        assertEquals(98.2, parsed.batteryLevel);
+    }
+
+    @Test
+    public void testCoreCommandSerialization() {
+        App app = new App();
+        App.CoreCommand cmd = new App.CoreCommand("REBOOT", "control-center");
+        
+        String json = app.toJson(cmd);
+        assertNotNull(json);
+        assertTrue(json.contains("REBOOT"));
+
+        App.CoreCommand parsed = app.fromJson(json, App.CoreCommand.class);
+        assertEquals("REBOOT", parsed.action);
+        assertEquals("control-center", parsed.sender);
     }
 }
+

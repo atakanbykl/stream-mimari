@@ -1,6 +1,7 @@
 package com.stream.base;
 
 import org.junit.jupiter.api.Test;
+import java.time.ZonedDateTime;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class BaseNodeTest {
@@ -55,6 +56,26 @@ public class BaseNodeTest {
         assertEquals(42.5, deserialized.value);
     }
 
+    @Test
+    public void testStreamRecord() {
+        SamplePayload payload = new SamplePayload("device-9", 100.0);
+        ZonedDateTime now = ZonedDateTime.now();
+        StreamRecord<SamplePayload> record = new StreamRecord<>(payload, 42L, now, "stream.device.state", null);
+
+        assertEquals("stream.device.state", record.getSubject());
+        assertEquals(42L, record.getSequence());
+        assertEquals(now, record.getTimestamp());
+        assertEquals("device-9", record.getPayload().name);
+        assertNull(record.getHeaders());
+    }
+
+    @Test
+    public void testResolveStreamNameDefault() {
+        DummyNode node = new DummyNode();
+        String stream = node.resolveStreamName("stream.orders.eur");
+        assertEquals(BaseNode.DEFAULT_STREAM_NAME, stream);
+    }
+
     static class SamplePayload {
         String name;
         double value;
@@ -66,3 +87,4 @@ public class BaseNodeTest {
         }
     }
 }
+

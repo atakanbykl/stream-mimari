@@ -14,18 +14,21 @@ Bu kurallar `stream-mimari` projesinde çalışan yapay zeka ajanı ve geliştir
 - Alt sınıflar doğrudan NATS bağlantısı oluşturmaya çalışmamalı; `BaseNode` tarafından sağlanan yaşam döngüsü (`start()`, `stop()`, `onStart()`, `onStop()`) ve metotları kullanmalıdır.
 - Thread-safe kapatma için ana sınıflarda `Runtime.getRuntime().addShutdownHook(...)` kullanılmalıdır.
 
-## 3. NATS Core ve JetStream Kullanım Standartları
-- **Topic İsimlendirme Standartları:**
-  - NATS Core konuları için: `core.<kategori>.<olay>` (Örn: `core.telemetry`, `core.commands`)
-  - JetStream konuları için: `stream.<kategori>.<olay>` (Örn: `stream.orders.new`, `stream.alerts`)
-- **JetStream Stream Tanımı:**
-  - JetStream topic'lerine abone olmadan veya yayın yapmadan önce mutlaka `ensureStream("STREAM_ADI", "stream.pattern.*")` çağrılmalıdır.
+## 3. Çift Katmanlı Mesajlaşma ve Geçmiş Hafızası Standartları
+- **NATS Core (Anlık / Minimum Gecikme):**
+  - Topic öneki: Mutlaka `core.<kategori>.<olay>` olmalıdır.
+  - Disk persistansı yoktur; telemetri, acil sinyal ve hızlı RPC komutları için kullanılır.
+- **JetStream (Sistem Hafızası & State Store):**
+  - Topic öneki: Mutlaka `stream.<kategori>.<olay>` olmalıdır.
+  - Stream tanımlarında `allowDirect = true` ve `RetentionPolicy.Limits` zorunludur (`BaseNode.ensureStream` bunu otomatik uygular).
+  - **Canlı Dinleme:** Eski mesajlarla boğulmamak için canlı tüketiciler `subscribeStreamLive` (`DeliverPolicy.New`) kullanmalıdır.
+  - **Geçmişten Son Mesajı Çekme:** Herhangi bir anda bir topic'in son durumu `getLastMessage`, `getLastMessageJson` veya `getLastMessageRecord` ile doğrudan bellekten (Direct Get) çekilmelidir.
 - **Onaylama (ACK) Politikası:**
   - `autoAck = false` ile açılan JetStream aboneliklerinde mesaj işlendikten sonra mutlaka `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile yeniden kuyruğa alınmalıdır.
 
 ## 4. Serileştirme ve JSON
 - JSON dönüşümleri için `BaseNode` içerisindeki dahili `toJson(...)` ve `fromJson(...)` metotları kullanılmalıdır.
-- Tip güvenli abonelikler için `subscribeCoreJson(...)` ve `subscribeStreamJson(...)` tercih edilmelidir.
+- Tip güvenli abonelikler için `subscribeCoreJson(...)`, `subscribeStreamLiveJson(...)` ve `getLastMessageJson(...)` tercih edilmelidir.
 
 ## 5. Antigravity Özelleştirmeleri (Self-Maintaining Customizations)
 - Projede yeni bir iş akışı, kural, araç veya entegrasyon ihtiyacı doğduğunda ilgili özelleştirme proaktif olarak güncellenmeli veya yenisi oluşturulmalıdır:

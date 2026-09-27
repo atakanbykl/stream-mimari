@@ -2,16 +2,12 @@ package com.stream.base;
 
 import com.google.gson.Gson;
 import io.nats.client.*;
-import io.nats.client.api.PublishAck;
-import io.nats.client.api.StorageType;
-import io.nats.client.api.StreamConfiguration;
-import io.nats.client.api.StreamInfo;
+import io.nats.client.api.*;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,15 +17,18 @@ import java.util.function.Consumer;
  * Tüm node-* servislerinin extend edeceği temel soyut sınıf.
  * 
  * Bu sınıf alt sınıflara şunları sağlar:
- * 1. NATS Core üzerinden birden fazla topic dinleme (her topic için özel handler).
- * 2. NATS Core üzerinden birden fazla farklı topic'e mesaj yayınlama (Publish).
- * 3. JetStream üzerinden birden fazla topic dinleme (her topic için özel handler).
- * 4. JetStream üzerinden birden fazla farklı topic'e mesaj yayınlama (Publish - sync / async).
- * 5. Stream yönetimi (ensureStream ile otomatik oluşturma).
+ * 1. NATS Core: Ultra düşük gecikmeli anlık mesajlaşma (in-memory pub/sub).
+ * 2. JetStream: Uygulama geçmiş hafızası (temporal memory/state store).
+ * 3. Doğrudan Geçmiş Sorgulama (Direct Get): İstediği an geçmişteki son mesajı çekme (getLastMessage).
+ * 4. Canlı Dinleme (subscribeStreamLive): Geçmişteki mesajları tekrar etmeden yalnızca yeni olayları dinleme.
+ * 5. Otomatik Stream Yönetimi: allowDirect=true ve RetentionPolicy.Limits ile güvenli kalıcılık.
  * 6. Gson tabanlı otomatik JSON serileştirme / deserileştirme.
  * 7. start() ve stop() ile thread-safe yaşam döngüsü ve kaynak temizliği.
  */
 public abstract class BaseNode {
+
+    public static final String DEFAULT_STREAM_NAME = "STREAM_MIMARI";
+    public static final String DEFAULT_STREAM_SUBJECT = "stream.>";
 
     private final String nodeId;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -47,7 +46,11 @@ public abstract class BaseNode {
     private final Map<String, Subscription> coreSubscriptions = new ConcurrentHashMap<>();
     private final Map<String, JetStreamSubscription> streamSubscriptions = new ConcurrentHashMap<>();
 
-    // JSON yardımcı sınıfı
+    // Bilinen stream isimleri ve eşleşen topic önbelleği
+    private final Set<String> knownStreams = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> subjectToStreamMap = new ConcurrentHashMap<>();
+
+    // JSON serileştirici
     private final Gson gson = new Gson();
 
     public BaseNode(String nodeId) {
@@ -74,7 +77,7 @@ public abstract class BaseNode {
                     connect();
                 }
                 onStart();
-                log("Başarıyla başlatıldı ve çalışıyor.");
+                log("Başarıyla başlatıldı ve dinlemede.");
             } catch (Exception e) {
                 running.set(false);
                 log("Başlatılırken hata oluştu: " + e.getMessage());
@@ -86,7 +89,7 @@ public abstract class BaseNode {
     }
 
     /**
-     * Düğümü durdurur. Abonelikleri ve NATS bağlantısını temizler.
+     * Düğümü durdurur. Tüm Core/Stream aboneliklerini ve NATS bağlantısını temizler.
      */
     public synchronized void stop() {
         if (running.compareAndSet(true, false)) {
@@ -142,23 +145,13 @@ public abstract class BaseNode {
         }
     }
 
-    /**
-     * Alt sınıfların kendi başlatma ve abonelik mantığını yazacağı soyut metot.
-     */
     protected abstract void onStart() throws Exception;
-
-    /**
-     * Alt sınıfların kaynak temizliğini yapacağı soyut metot.
-     */
     protected abstract void onStop() throws Exception;
 
     // =========================================================================
     // BAĞLANTI (CONNECTION) YÖNETİMİ
     // =========================================================================
 
-    /**
-     * NATS sunucusuna bağlanır, JetStream bağlamlarını ve Dispatcher'ları hazırlar.
-     */
     public synchronized void connect() throws IOException, InterruptedException {
         if (connection == null || connection.getStatus() != Connection.Status.CONNECTED) {
             log("NATS sunucusuna bağlanılıyor: " + natsUrl);
@@ -168,7 +161,7 @@ public abstract class BaseNode {
             this.jetStreamManagement = connection.jetStreamManagement();
             this.coreDispatcher = connection.createDispatcher();
             this.streamDispatcher = connection.createDispatcher();
-            log("NATS Core ve JetStream bağlantısı kuruldu.");
+            log("NATS Core ve JetStream bağlamı başarıyla hazırlandı.");
         }
     }
 
@@ -176,7 +169,7 @@ public abstract class BaseNode {
         return new Options.Builder()
                 .server(natsUrl)
                 .connectionName(nodeId)
-                .maxReconnects(-1) // sınırsız yeniden bağlanma denemesi
+                .maxReconnects(-1)
                 .reconnectWait(Duration.ofSeconds(2))
                 .connectionListener((conn, type) -> log("Bağlantı durumu: " + type))
                 .errorListener(new ErrorListener() {
@@ -192,13 +185,13 @@ public abstract class BaseNode {
                 .build();
     }
 
-    private void ensureConnected() {
+    protected void ensureConnected() {
         if (connection == null || connection.getStatus() != Connection.Status.CONNECTED) {
             throw new IllegalStateException("NATS bağlantısı aktif değil. Önce connect() veya start() çağrılmalıdır.");
         }
     }
 
-    private void ensureJetStream() {
+    protected void ensureJetStream() {
         ensureConnected();
         if (jetStream == null) {
             throw new IllegalStateException("JetStream bağlamı aktif değil.");
@@ -206,22 +199,33 @@ public abstract class BaseNode {
     }
 
     // =========================================================================
-    // JETSTREAM STREAM YÖNETİMİ
+    // STREAM TANIMLAMA VE YÖNETİMİ
     // =========================================================================
 
     /**
-     * JetStream üzerinde belirtilen stream mevcut değilse oluşturur.
+     * Tüm 'stream.>' konularını kapsayan varsayılan mimari stream'ini (STREAM_MIMARI) oluşturur veya doğrular.
+     */
+    public StreamInfo ensureDefaultStream() throws IOException, JetStreamApiException {
+        return ensureStream(DEFAULT_STREAM_NAME, StorageType.File, DEFAULT_STREAM_SUBJECT);
+    }
+
+    /**
+     * JetStream üzerinde belirtilen stream'in varlığından emin olur.
+     * Direct Get (allowDirect = true) ve kalıcılık (RetentionPolicy.Limits) standartlarını zorunlu kılar.
      *
-     * @param streamName Stream adı (örn. "STREAM_EVENTS")
-     * @param storageType Bellek (Memory) veya Dosya (File) saklama
-     * @param subjects Bu stream'in toplayacağı topic desenleri (örn. "sensor.*", "order.created")
-     * @return StreamInfo nesnesi
+     * @param streamName Stream adı
+     * @param storageType File veya Memory saklama
+     * @param subjects Bu stream'in kapsayacağı topic kalıpları
      */
     public StreamInfo ensureStream(String streamName, StorageType storageType, String... subjects) throws IOException, JetStreamApiException {
         ensureJetStream();
         try {
             StreamInfo info = jetStreamManagement.getStreamInfo(streamName);
-            log(String.format("Stream '%s' zaten mevcut. Subjects: %s", streamName, info.getConfiguration().getSubjects()));
+            knownStreams.add(streamName);
+            for (String sub : subjects) {
+                subjectToStreamMap.put(sub, streamName);
+            }
+            log(String.format("Stream '%s' mevcut. Subjects: %s", streamName, info.getConfiguration().getSubjects()));
             return info;
         } catch (JetStreamApiException e) {
             if (e.getErrorCode() == 10059 || e.getMessage().toLowerCase().contains("stream not found")) {
@@ -229,9 +233,15 @@ public abstract class BaseNode {
                         .name(streamName)
                         .subjects(subjects)
                         .storageType(storageType != null ? storageType : StorageType.File)
+                        .retentionPolicy(RetentionPolicy.Limits)
+                        .allowDirect(true) // Doğrudan son mesajı çekebilmek (Direct Get) için ZORUNLU
                         .build();
                 StreamInfo created = jetStreamManagement.addStream(config);
-                log(String.format("Yeni JetStream stream oluşturuldu: '%s', Subjects: %s", streamName, Arrays.toString(subjects)));
+                knownStreams.add(streamName);
+                for (String sub : subjects) {
+                    subjectToStreamMap.put(sub, streamName);
+                }
+                log(String.format("Yeni JetStream stream oluşturuldu (allowDirect=true): '%s', Subjects: %s", streamName, Arrays.toString(subjects)));
                 return created;
             }
             throw e;
@@ -242,53 +252,52 @@ public abstract class BaseNode {
         return ensureStream(streamName, StorageType.File, subjects);
     }
 
+    /**
+     * Verilen subject'in ait olduğu stream adını belirler.
+     */
+    public String resolveStreamName(String subject) {
+        if (subjectToStreamMap.containsKey(subject)) {
+            return subjectToStreamMap.get(subject);
+        }
+        if (knownStreams.contains(DEFAULT_STREAM_NAME)) {
+            return DEFAULT_STREAM_NAME;
+        }
+        try {
+            if (jetStreamManagement != null) {
+                List<String> matching = jetStreamManagement.getStreamNames(subject);
+                if (matching != null && !matching.isEmpty()) {
+                    String found = matching.get(0);
+                    subjectToStreamMap.put(subject, found);
+                    return found;
+                }
+            }
+        } catch (Exception ignored) {}
+        return DEFAULT_STREAM_NAME;
+    }
+
     // =========================================================================
-    // 1. NATS CORE - PUBLISH (YAYINLAMA)
+    // 1. NATS CORE - PUBLISH & SUBSCRIBE (ULTRA DÜŞÜK GECİKME)
     // =========================================================================
 
-    /**
-     * NATS Core: Belirtilen topic'e byte array olarak mesaj yayınlar.
-     */
     public void publishCore(String subject, byte[] data) {
         ensureConnected();
         connection.publish(subject, data);
     }
 
-    /**
-     * NATS Core: Belirtilen topic'e düz metin (String) mesaj yayınlar.
-     */
     public void publishCore(String subject, String text) {
         byte[] data = (text != null) ? text.getBytes(StandardCharsets.UTF_8) : new byte[0];
         publishCore(subject, data);
     }
 
-    /**
-     * NATS Core: Belirtilen nesneyi JSON'a serileştirerek yayınlar.
-     */
     public void publishCoreJson(String subject, Object payload) {
         publishCore(subject, toJson(payload));
     }
 
-    /**
-     * NATS Core: İstek-Yanıt (Request-Reply) deseni için replyTo adresiyle yayınlar.
-     */
     public void publishCore(String subject, String replyTo, byte[] data) {
         ensureConnected();
         connection.publish(subject, replyTo, data);
     }
 
-    // =========================================================================
-    // 2. NATS CORE - SUBSCRIBE (ABONELİK & HANDLER ATAMA)
-    // =========================================================================
-
-    /**
-     * NATS Core: Belirtilen topic'i dinler ve gelen her mesaj için atanan handler'ı çalıştırır.
-     * Farklı topic'ler için ayrı ayrı handler atanarak çağrılabilir.
-     *
-     * @param subject Dinlenecek konu (örn. "core.telemetry")
-     * @param handler Mesajı işleyecek özel MessageHandler
-     * @return Subscription nesnesi
-     */
     public Subscription subscribeCore(String subject, MessageHandler handler) {
         ensureConnected();
         Subscription sub = coreDispatcher.subscribe(subject, handler);
@@ -297,9 +306,6 @@ public abstract class BaseNode {
         return sub;
     }
 
-    /**
-     * NATS Core: Queue Group (yük dengeleme) desteği ile dinleme yapar.
-     */
     public Subscription subscribeCore(String subject, String queueGroup, MessageHandler handler) {
         ensureConnected();
         Subscription sub = coreDispatcher.subscribe(subject, queueGroup, handler);
@@ -308,9 +314,6 @@ public abstract class BaseNode {
         return sub;
     }
 
-    /**
-     * NATS Core: Gelen mesajı doğrudan String formatında işleyen pratik dinleyici.
-     */
     public Subscription subscribeCoreText(String subject, Consumer<String> textConsumer) {
         return subscribeCore(subject, msg -> {
             String text = new String(msg.getData(), StandardCharsets.UTF_8);
@@ -318,9 +321,6 @@ public abstract class BaseNode {
         });
     }
 
-    /**
-     * NATS Core: Gelen JSON mesajını otomatik POJO tipine dönüştürerek işleyen dinleyici.
-     */
     public <T> Subscription subscribeCoreJson(String subject, Class<T> clazz, Consumer<T> consumer) {
         return subscribeCore(subject, msg -> {
             try {
@@ -332,9 +332,6 @@ public abstract class BaseNode {
         });
     }
 
-    /**
-     * NATS Core aboneliğini iptal eder.
-     */
     public void unsubscribeCore(String subject) {
         Subscription sub = coreSubscriptions.remove(subject);
         if (sub != null && coreDispatcher != null) {
@@ -344,66 +341,142 @@ public abstract class BaseNode {
     }
 
     // =========================================================================
-    // 3. JETSTREAM - PUBLISH (YAYINLAMA)
+    // 2. JETSTREAM - PUBLISH (KALICI GEÇMİŞ HAFIZASINA YAYIN)
     // =========================================================================
 
-    /**
-     * JetStream: Senkron olarak byte array yayınlar (sunucu onay - PublishAck bekler).
-     */
     public PublishAck publishStream(String subject, byte[] data) throws IOException, JetStreamApiException {
         ensureJetStream();
         return jetStream.publish(subject, data);
     }
 
-    /**
-     * JetStream: Senkron olarak düz metin (String) yayınlar.
-     */
     public PublishAck publishStream(String subject, String text) throws IOException, JetStreamApiException {
         byte[] data = (text != null) ? text.getBytes(StandardCharsets.UTF_8) : new byte[0];
         return publishStream(subject, data);
     }
 
-    /**
-     * JetStream: Senkron olarak nesneyi JSON formatında yayınlar.
-     */
     public PublishAck publishStreamJson(String subject, Object payload) throws IOException, JetStreamApiException {
         return publishStream(subject, toJson(payload));
     }
 
-    /**
-     * JetStream: Asenkron olarak byte array yayınlar (CompletableFuture döner).
-     */
     public CompletableFuture<PublishAck> publishStreamAsync(String subject, byte[] data) {
         ensureJetStream();
         return jetStream.publishAsync(subject, data);
     }
 
-    /**
-     * JetStream: Asenkron olarak String yayınlar.
-     */
     public CompletableFuture<PublishAck> publishStreamAsync(String subject, String text) {
         byte[] data = (text != null) ? text.getBytes(StandardCharsets.UTF_8) : new byte[0];
         return publishStreamAsync(subject, data);
     }
 
-    /**
-     * JetStream: Asenkron olarak nesneyi JSON formatında yayınlar.
-     */
     public CompletableFuture<PublishAck> publishStreamJsonAsync(String subject, Object payload) {
         return publishStreamAsync(subject, toJson(payload));
     }
 
     // =========================================================================
-    // 4. JETSTREAM - SUBSCRIBE (ABONELİK & HANDLER ATAMA)
+    // 3. JETSTREAM - GEÇMİŞTEN SON MESAJI ÇEKME (LAST-BY-SUBJECT / DIRECT GET)
     // =========================================================================
 
     /**
-     * JetStream: Belirtilen stream topic'ini dinler ve atanan MessageHandler'ı çalıştırır.
+     * Belirtilen stream ve topic için geçmişteki en son kaydedilen mesajı çeker.
+     * Konuda henüz hiç mesaj yoksa (cold start) Optional.empty() döner, çökmez.
      *
-     * @param subject Dinlenecek stream subject'i
-     * @param handler Gelen mesajları işleyen MessageHandler
-     * @param autoAck Otomatik ACK yapılsın mı (false ise handler içinde msg.ack() çağrılmalıdır)
-     * @return JetStreamSubscription nesnesi
+     * @param streamName Stream adı
+     * @param subject İlgili konu
+     * @return MessageInfo sarmalayıcısı (varsa)
+     */
+    public Optional<MessageInfo> getLastMessage(String streamName, String subject) {
+        ensureJetStream();
+        try {
+            MessageInfo info = jetStreamManagement.getLastMessage(streamName, subject);
+            if (info != null && info.hasError()) {
+                return Optional.empty();
+            }
+            return Optional.ofNullable(info);
+        } catch (JetStreamApiException e) {
+            // 10037: no message found (konu henüz boş)
+            // 10059: stream not found
+            if (e.getErrorCode() == 10037 || e.getErrorCode() == 10059 ||
+                    e.getMessage().toLowerCase().contains("no message found")) {
+                return Optional.empty();
+            }
+            log(String.format("getLastMessage hatası ('%s'/'%s'): %s", streamName, subject, e.getMessage()));
+            return Optional.empty();
+        } catch (Exception e) {
+            log(String.format("getLastMessage bağlantı hatası ('%s'/'%s'): %s", streamName, subject, e.getMessage()));
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Stream adını otomatik çözümleyerek konunun geçmişteki son mesajını çeker.
+     */
+    public Optional<MessageInfo> getLastMessage(String subject) {
+        String streamName = resolveStreamName(subject);
+        return getLastMessage(streamName, subject);
+    }
+
+    /**
+     * Konunun geçmişteki son mesajını düz metin (String) olarak çeker.
+     */
+    public Optional<String> getLastMessageText(String subject) {
+        return getLastMessage(subject).map(msg -> new String(msg.getData(), StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Konunun geçmişteki son mesajını JSON'dan deserialize ederek Java nesnesi olarak çeker.
+     */
+    public <T> Optional<T> getLastMessageJson(String subject, Class<T> clazz) {
+        return getLastMessage(subject).map(msg -> fromJson(msg.getData(), clazz));
+    }
+
+    /**
+     * Konunun geçmişteki son mesajını payload + sequence + timestamp meta verileriyle birlikte döner.
+     */
+    public <T> Optional<StreamRecord<T>> getLastMessageRecord(String subject, Class<T> clazz) {
+        return getLastMessage(subject).map(msg -> {
+            T payload = fromJson(msg.getData(), clazz);
+            return new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders());
+        });
+    }
+
+    // =========================================================================
+    // 4. JETSTREAM - ANLIK VE GEÇMİŞ ABONELİKLER (SUBSCRIBE)
+    // =========================================================================
+
+    /**
+     * JetStream CANLI Dinleme: Yalnızca bu andan sonra gelen YENİ mesajları anlık dinler (DeliverPolicy.New).
+     * Eski geçmiş mesajları tüketiciye tekrar akıtmaz.
+     */
+    public JetStreamSubscription subscribeStreamLive(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        ensureJetStream();
+        ConsumerConfiguration cc = ConsumerConfiguration.builder()
+                .deliverPolicy(DeliverPolicy.New)
+                .build();
+        PushSubscribeOptions pso = PushSubscribeOptions.builder()
+                .configuration(cc)
+                .build();
+        return subscribeStream(subject, pso, handler, autoAck);
+    }
+
+    /**
+     * JetStream CANLI JSON Dinleme: Yalnızca yeni mesajları JSON'dan dönüştürerek dinler.
+     */
+    public <T> JetStreamSubscription subscribeStreamLiveJson(String subject, Class<T> clazz, StreamItemHandler<T> handler, boolean autoAck) throws IOException, JetStreamApiException {
+        return subscribeStreamLive(subject, msg -> {
+            try {
+                T obj = fromJson(msg.getData(), clazz);
+                handler.handle(obj, msg);
+            } catch (Exception e) {
+                log(String.format("Canlı Stream JSON hatası ('%s'): %s", subject, e.getMessage()));
+                if (!autoAck) {
+                    msg.nak();
+                }
+            }
+        }, autoAck);
+    }
+
+    /**
+     * Standart JetStream dinleme.
      */
     public JetStreamSubscription subscribeStream(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
         ensureJetStream();
@@ -413,9 +486,6 @@ public abstract class BaseNode {
         return sub;
     }
 
-    /**
-     * JetStream: PushSubscribeOptions seçenekleri (durable consumer vb.) ile dinler.
-     */
     public JetStreamSubscription subscribeStream(String subject, PushSubscribeOptions options, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
         ensureJetStream();
         JetStreamSubscription sub = jetStream.subscribe(subject, streamDispatcher, handler, autoAck, options);
@@ -424,9 +494,6 @@ public abstract class BaseNode {
         return sub;
     }
 
-    /**
-     * JetStream: Queue Group ile dinler (birden fazla node arasında stream mesajlarını paylaştırır).
-     */
     public JetStreamSubscription subscribeStream(String subject, String queueGroup, PushSubscribeOptions options, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
         ensureJetStream();
         JetStreamSubscription sub = jetStream.subscribe(subject, queueGroup, streamDispatcher, handler, autoAck, options);
@@ -435,14 +502,6 @@ public abstract class BaseNode {
         return sub;
     }
 
-    /**
-     * JetStream: Gelen JSON mesajını otomatik POJO tipine deserialize edip StreamItemHandler'a iletir.
-     *
-     * @param subject Dinlenecek topic
-     * @param clazz Deserialize edilecek POJO sınıfı
-     * @param handler Tiplendirilmiş nesne ve orijinal Message'ı alan handler
-     * @param autoAck Otomatik ACK durumu
-     */
     public <T> JetStreamSubscription subscribeStreamJson(String subject, Class<T> clazz, StreamItemHandler<T> handler, boolean autoAck) throws IOException, JetStreamApiException {
         return subscribeStream(subject, msg -> {
             try {
@@ -457,9 +516,6 @@ public abstract class BaseNode {
         }, autoAck);
     }
 
-    /**
-     * JetStream aboneliğini iptal eder.
-     */
     public void unsubscribeStream(String subject) {
         JetStreamSubscription sub = streamSubscriptions.remove(subject);
         if (sub != null) {
@@ -473,7 +529,7 @@ public abstract class BaseNode {
     }
 
     // =========================================================================
-    // YARDIMCI METOTLAR (JSON, GETTER, SETTER)
+    // YARDIMCI METOTLAR
     // =========================================================================
 
     public Gson getGson() {
@@ -529,10 +585,8 @@ public abstract class BaseNode {
         return jetStreamManagement;
     }
 
-    /**
-     * Standart loglama formatı: [nodeId] mesaj
-     */
     protected void log(String message) {
         System.out.printf("[%s] %s%n", nodeId, message);
     }
 }
+

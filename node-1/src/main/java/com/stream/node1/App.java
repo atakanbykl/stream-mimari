@@ -1,42 +1,64 @@
 package com.stream.node1;
 
 import com.stream.base.BaseNode;
+import com.stream.base.StreamRecord;
 import io.nats.client.Message;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Optional;
 
 /**
- * node-1 servisi. BaseNode sınıfını extend eder.
+ * node-1 Servisi.
  * 
- * Bu sınıf:
- * - Hem NATS Core hem JetStream üzerinden birden fazla farklı topic'i dinler.
- * - Her topic'e atanmış özel handler metodları ile işlem yapar.
- * - Hem Core hem JetStream üzerinden birden fazla topic'e yayın yapar.
+ * Bu sınıf çift katmanlı mimariyi uygular:
+ * 1. NATS Core Katmanı:
+ *    - Anlık, minimum gecikmeli komut ve telemetri alışverişi (in-memory).
+ *    - Örnek: 'core.commands' konusu.
+ * 
+ * 2. JetStream Geçmiş Hafızası (Temporal Memory / State Store) Katmanı:
+ *    - Olayların ve durumların kalıcı olarak saklanması.
+ *    - Anlık canlı dinleme (yalnızca yeni mesajları alarak eski geçmişle boğulmama): subscribeStreamLive.
+ *    - Geçmişten son mesajı anında çekme (Direct Get): getLastMessageJson / getLastMessageRecord.
  */
 public class App extends BaseNode {
 
-    // Örnek veri modelleri
-    public static class SensorData {
-        public String sensorId;
-        public double temperature;
+    // Örnek Durum Modeli (Geçmiş hafızasında saklanacak nesne)
+    public static class DeviceState {
+        public String deviceId;
+        public String status;
+        public double batteryLevel;
         public long timestamp;
 
-        public SensorData() {}
-        public SensorData(String sensorId, double temperature) {
-            this.sensorId = sensorId;
-            this.temperature = temperature;
+        public DeviceState() {}
+
+        public DeviceState(String deviceId, String status, double batteryLevel) {
+            this.deviceId = deviceId;
+            this.status = status;
+            this.batteryLevel = batteryLevel;
             this.timestamp = System.currentTimeMillis();
+        }
+
+        @Override
+        public String toString() {
+            return String.format("DeviceState[id=%s, status=%s, battery=%.1f%%]", deviceId, status, batteryLevel);
         }
     }
 
-    public static class CommandData {
-        public String targetNode;
+    // Örnek Anlık Komut Modeli (NATS Core üzerinden ultra hızlı iletilecek nesne)
+    public static class CoreCommand {
         public String action;
+        public String sender;
 
-        public CommandData() {}
-        public CommandData(String targetNode, String action) {
-            this.targetNode = targetNode;
+        public CoreCommand() {}
+
+        public CoreCommand(String action, String sender) {
             this.action = action;
+            this.sender = sender;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("CoreCommand[action=%s, sender=%s]", action, sender);
         }
     }
 
@@ -50,97 +72,96 @@ public class App extends BaseNode {
 
     @Override
     protected void onStart() throws Exception {
-        log("Servis başlatıldı. Topic abonelikleri tanımlanıyor...");
+        log("===================================================================");
+        log("Node-1 Başlatıldı. Çift katmanlı mesajlaşma altyapısı kuruluyor...");
+        log("===================================================================");
 
         // =====================================================================
-        // 1. JETSTREAM STREAM HAZIRLIĞI
+        // ADIM 1: JetStream Hafızasını Hazırlama (allowDirect=true ile)
         // =====================================================================
-        // JetStream topic'leri için stream tanımlanır (yoksa otomatik oluşturulur)
-        ensureStream("STREAM_NODES", "stream.orders.*", "stream.alerts");
+        // Tüm 'stream.>' konularını kapsayan merkezi mimari stream'ini garantiye al
+        ensureDefaultStream();
 
         // =====================================================================
-        // 2. NATS CORE - ÇOKLU TOPIC DİNLEME (HER BİRİNE ÖZEL HANDLER)
+        // ADIM 2: NATS Core Katmanı (Minimum Gecikmeli Canlı Dinleme)
         // =====================================================================
-        
-        // Topic A: "core.telemetry" için özel handler
-        subscribeCore("core.telemetry", this::handleCoreTelemetry);
-
-        // Topic B: "core.commands" için özel JSON handler
-        subscribeCoreJson("core.commands", CommandData.class, this::handleCoreCommand);
+        subscribeCoreJson("core.commands", CoreCommand.class, this::handleCoreCommand);
 
         // =====================================================================
-        // 3. JETSTREAM - ÇOKLU TOPIC DİNLEME (HER BİRİNE ÖZEL HANDLER)
+        // ADIM 3: JetStream Canlı Dinleme (Yalnızca YENİ gelen olaylar)
         // =====================================================================
-
-        // Stream Topic 1: "stream.orders.new" için özel handler (manuel ACK örneği)
-        subscribeStream("stream.orders.new", this::handleStreamOrder, false);
-
-        // Stream Topic 2: "stream.alerts" için özel JSON handler (otomatik ACK)
-        subscribeStreamJson("stream.alerts", SensorData.class, this::handleStreamAlert, true);
+        // Geçmişteki 1000'lerce mesajı baştan okumaz, sadece bu andan itibaren gelenleri yakalar
+        subscribeStreamLiveJson("stream.device.state", DeviceState.class, this::handleLiveStreamDeviceState, true);
 
         // =====================================================================
-        // 4. ÇOKLU TOPIC'LERE YAYINLAMA (PUBLISH) ÖRNEKLERİ
+        // ADIM 4: Örnek Mesaj Yayınlama & Geçmişten Son Mesajı Sorgulama
         // =====================================================================
-        sendSamplePublications();
+        simulateOperations();
     }
 
-    // =========================================================================
-    // HANDLER METOTLARI (Her topic için ayrı işlem yapan iş mantıkları)
-    // =========================================================================
-
-    private void handleCoreTelemetry(Message msg) {
-        String data = new String(msg.getData(), StandardCharsets.UTF_8);
-        log("[HANDLER-CORE-TELEMETRY] Ham telemetri verisi alındı: " + data);
+    /**
+     * NATS Core üzerinden gelen ultra hızlı anlık komutları işler.
+     */
+    private void handleCoreCommand(CoreCommand cmd) {
+        log("[CORE-ANLIK-GECİKMESİZ] Hızlı komut alındı: " + cmd);
     }
 
-    private void handleCoreCommand(CommandData command) {
-        log(String.format("[HANDLER-CORE-COMMAND] Komut alındı: target=%s, action=%s", 
-                command.targetNode, command.action));
+    /**
+     * JetStream üzerinden gelen canlı durum güncellemelerini işler.
+     */
+    private void handleLiveStreamDeviceState(DeviceState state, Message msg) {
+        log("[STREAM-CANLI-DİNLEME] Yeni cihaz durumu yakalandı: " + state);
     }
 
-    private void handleStreamOrder(Message msg) {
-        String orderJson = new String(msg.getData(), StandardCharsets.UTF_8);
-        log("[HANDLER-STREAM-ORDER] JetStream sipariş mesajı alındı: " + orderJson);
-        // Manuel onaylama (ACK)
-        msg.ack();
-    }
-
-    private void handleStreamAlert(SensorData alert, Message msg) {
-        log(String.format("[HANDLER-STREAM-ALERT] JetStream sensör alarmı: %s -> %.2f °C", 
-                alert.sensorId, alert.temperature));
-    }
-
-    // =========================================================================
-    // FARKLI TOPIC'LERE YAYIN METOTLARI
-    // =========================================================================
-
-    public void sendSamplePublications() {
+    /**
+     * Örnek akış simülasyonu.
+     */
+    public void simulateOperations() {
         try {
-            // NATS Core: Farklı topic'lere yayın
-            publishCore("core.telemetry", "Node-1 Core Telemetry verisi");
-            publishCoreJson("core.commands", new CommandData("node-2", "START_SYNC"));
+            // 1. NATS Core üzerinden ultra hızlı bir komut yayınla
+            publishCoreJson("core.commands", new CoreCommand("CALIBRATE_SENSORS", getNodeId()));
+            log("Core NATS üzerinden anlık komut yayınlandı.");
 
-            // JetStream: Farklı topic'lere senkron / asenkron yayın
-            publishStream("stream.orders.new", "{\"orderId\": \"ORD-1001\", \"item\": \"Laptop\"}");
-            publishStreamJson("stream.alerts", new SensorData("sensor-node-1", 38.5));
+            // 2. JetStream geçmiş hafızasına bir cihaz durumu kaydet
+            DeviceState newState = new DeviceState("drone-alpha", "ARMED", 94.5);
+            publishStreamJson("stream.device.state", newState);
+            log("JetStream geçmiş hafızasına cihaz durumu kaydedildi: " + newState);
 
-            log("Örnek Core ve JetStream yayınları farklı topic'lere başarıyla gönderildi.");
+            // 3. KRİTİK İŞLEV: Herhangi bir zamanda geçmişten son mesajı çekme (Direct Get)
+            fetchHistoricalLatestState("stream.device.state");
+
         } catch (Exception e) {
-            log("Yayın sırasında hata oluştu: " + e.getMessage());
+            log("İşlem simülasyonu sırasında hata: " + e.getMessage());
+        }
+    }
+
+    /**
+     * JetStream geçmiş hafızasından bir topic'in EN SON kaydedilen durumunu sorgular.
+     */
+    public void fetchHistoricalLatestState(String subject) {
+        log(String.format("'%s' konusu için geçmiş hafızasındaki son durum sorgulanıyor...", subject));
+
+        // Metadatalı kayıt olarak son mesajı çek
+        Optional<StreamRecord<DeviceState>> recordOpt = getLastMessageRecord(subject, DeviceState.class);
+
+        if (recordOpt.isPresent()) {
+            StreamRecord<DeviceState> record = recordOpt.get();
+            log(String.format("[GEÇMİŞTEN-SON-MESAJ] Bulundu! Sıra No: %d, Zaman: %s, Veri: %s",
+                    record.getSequence(), record.getTimestamp(), record.getPayload()));
+        } else {
+            log(String.format("[GEÇMİŞTEN-SON-MESAJ] '%s' konusunda henüz kayıtlı bir geçmiş bulunamadı (Cold Start).", subject));
         }
     }
 
     @Override
     protected void onStop() throws Exception {
-        log("Node-1 özel durdurma işlemleri tamamlandı.");
+        log("Node-1 servis kaynakları temizlendi.");
     }
 
     public static void main(String[] args) {
         App node = new App();
-
-        // Kapatma sinyali (Ctrl+C / SIGINT) yakalandığında temiz kapanış
         Runtime.getRuntime().addShutdownHook(new Thread(node::stop));
-
         node.start();
     }
 }
+
