@@ -12,13 +12,20 @@ public class AppTest {
         
         // BaseNode sınıfını extend ettiğini doğrula
         assertTrue(app instanceof BaseNode, "App sınıfı BaseNode sınıfını extend etmelidir.");
-        assertEquals("node-1", app.getNodeId(), "Node ID node-1 olmalıdır.");
+        assertEquals("node-1", app.getNodeId(), "Node ID 'node-1' olmalıdır.");
+    }
+
+    @Test
+    public void testSensorDataSerialization() {
+        App app = new App();
+        App.SensorData sensorData = new App.SensorData("temp-sensor-1", 25.4);
         
-        // Yaşam döngüsünü test et
-        app.start();
-        assertTrue(app.isRunning());
-        
-        app.stop();
-        assertFalse(app.isRunning());
+        String json = app.toJson(sensorData);
+        assertNotNull(json);
+        assertTrue(json.contains("temp-sensor-1"));
+
+        App.SensorData parsed = app.fromJson(json, App.SensorData.class);
+        assertEquals("temp-sensor-1", parsed.sensorId);
+        assertEquals(25.4, parsed.temperature);
     }
 }

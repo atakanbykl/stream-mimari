@@ -1,12 +1,13 @@
-# node-1
+# node-1 Servisi
 
-Stream mimarisi kapsamında çalışan `node-1` Java Maven projesi.
+`base` modülündeki `BaseNode` sınıfını extend eden örnek servis implementasyonu.
 
-## Proje Yapısı
-- **Grup ID**: `com.stream`
-- **Artifact ID**: `node-1`
-- **Sürüm**: `1.0-SNAPSHOT`
-- **Java Versiyonu**: 24
-
-## Başlangıç Sınıfı
-- `com.stream.node1.App`
+## Özellikler
+- **NATS Core Dinleme**:
+  - `core.telemetry` -> Ham telemetri dinleyicisi
+  - `core.commands` -> `CommandData` modeli üzerinden JSON dinleyici
+- **JetStream Dinleme**:
+  - `stream.orders.new` -> Manuel ACK ile sipariş dinleyicisi
+  - `stream.alerts` -> Otomatik ACK ile `SensorData` alarm dinleyicisi
+- **Yayınlama (Publish)**:
+  - NATS Core ve JetStream üzerinden birden çok farklı topic'e eş zamanlı yayın yapma örneği.
