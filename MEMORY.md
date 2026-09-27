@@ -76,6 +76,15 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
   - `BaseNode`: `getLastMessage`, `getLastMessageText`, `getLastMessageJson`, `getLastMessageRecord`, `subscribeStreamLive`, `subscribeStreamLiveJson`, `ensureDefaultStream`.
   - `node-1`: Hem anlık komutları hem de kalıcı durum geçmişini simüle eden yeni `App.java`.
 
+### [Adım 6] Mimari Uygunluk Denetimi (Audit) ve Tam Senkronizasyon
+- **Kapsam:** Tüm projenin `stream_architecture_plan.md` standartlarına uygunluğu denetlendi ve tespit edilen boşluklar kapatıldı.
+- **Yapılan İyileştirmeler:**
+  - `BaseNode`: `validateCoreSubject` ve `validateStreamSubject` koruma kalkanları eklenerek `core.` ve `stream.` topic karışması engellendi. `strictTopicValidation` desteği getirildi.
+  - `BaseNode`: `resolveStreamName` içinde `stream.` önekli konular doğrudan merkezi `STREAM_MIMARI` akışına yönlendirildi; mevcut stream'lerde `allowDirect` eksikse uyarı logu eklendi.
+  - `.agents/skills/stream-node-creator/SKILL.md`: Yeni node üretim şablonu güncellenerek doğrudan en son çift katmanlı mimari (`ensureDefaultStream`, `subscribeStreamLiveJson`, `getLastMessageRecord`) kodlarını üretecek şekilde senkronize edildi.
+  - `base/README.md` ve `node-1/README.md`: En güncel API ve servis rollerini yansıtacak şekilde revize edildi.
+  - `BaseNodeTest.java`: Topic kalkanı ve stream çözümleme birim testleri eklendi.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları

@@ -22,8 +22,9 @@ import java.util.function.Consumer;
  * 3. Doğrudan Geçmiş Sorgulama (Direct Get): İstediği an geçmişteki son mesajı çekme (getLastMessage).
  * 4. Canlı Dinleme (subscribeStreamLive): Geçmişteki mesajları tekrar etmeden yalnızca yeni olayları dinleme.
  * 5. Otomatik Stream Yönetimi: allowDirect=true ve RetentionPolicy.Limits ile güvenli kalıcılık.
- * 6. Gson tabanlı otomatik JSON serileştirme / deserileştirme.
- * 7. start() ve stop() ile thread-safe yaşam döngüsü ve kaynak temizliği.
+ * 6. Topic Ad Alanı Kalkanı (Validation): core.> ve stream.> konularının karışmasını önleme.
+ * 7. Gson tabanlı otomatik JSON serileştirme / deserileştirme.
+ * 8. start() ve stop() ile thread-safe yaşam döngüsü ve kaynak temizliği.
  */
 public abstract class BaseNode {
 
@@ -34,6 +35,7 @@ public abstract class BaseNode {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private String natsUrl = "nats://127.0.0.1:4222";
     private boolean autoConnect = true;
+    private boolean strictTopicValidation = false;
 
     // NATS ve JetStream nesneleri
     private Connection connection;
@@ -199,6 +201,48 @@ public abstract class BaseNode {
     }
 
     // =========================================================================
+    // TOPIC AD ALANI KALKANI VE DOĞRULAMA (VALIDATION)
+    // =========================================================================
+
+    /**
+     * NATS Core konuları için ad alanı doğrulamasını yapar.
+     * Core konuları 'core.' ile başlamalıdır. 'stream.' ile başlıyorsa uyarı/hata verir.
+     */
+    public void validateCoreSubject(String subject) {
+        if (subject == null || subject.isEmpty()) {
+            throw new IllegalArgumentException("Subject boş olamaz.");
+        }
+        if (subject.startsWith("stream.")) {
+            String warn = String.format("MİMARİ KURAL İHLALİ: '%s' konusu JetStream öneki (stream.) içeriyor fakat NATS Core üzerinden işlem görüyor!", subject);
+            log(warn);
+            if (strictTopicValidation) {
+                throw new IllegalArgumentException(warn);
+            }
+        } else if (!subject.startsWith("core.")) {
+            log(String.format("[BİLGİ] '%s' konusu 'core.' standart öneki ile başlamıyor.", subject));
+        }
+    }
+
+    /**
+     * JetStream konuları için ad alanı doğrulamasını yapar.
+     * JetStream konuları 'stream.' ile başlamalıdır. 'core.' ile başlıyorsa uyarı/hata verir.
+     */
+    public void validateStreamSubject(String subject) {
+        if (subject == null || subject.isEmpty()) {
+            throw new IllegalArgumentException("Subject boş olamaz.");
+        }
+        if (subject.startsWith("core.")) {
+            String warn = String.format("MİMARİ KURAL İHLALİ: '%s' konusu NATS Core öneki (core.) içeriyor fakat JetStream üzerinden işlem görüyor!", subject);
+            log(warn);
+            if (strictTopicValidation) {
+                throw new IllegalArgumentException(warn);
+            }
+        } else if (!subject.startsWith("stream.")) {
+            log(String.format("[BİLGİ] '%s' konusu 'stream.' standart öneki ile başlamıyor.", subject));
+        }
+    }
+
+    // =========================================================================
     // STREAM TANIMLAMA VE YÖNETİMİ
     // =========================================================================
 
@@ -225,6 +269,12 @@ public abstract class BaseNode {
             for (String sub : subjects) {
                 subjectToStreamMap.put(sub, streamName);
             }
+
+            // Mevcut stream üzerinde allowDirect kontrolü
+            if (info.getConfiguration() != null && !info.getConfiguration().getAllowDirect()) {
+                log(String.format("[UYARI] '%s' stream'inde allowDirect aktif değil! Direct Get (son mesaj çekme) kısıtlanabilir.", streamName));
+            }
+
             log(String.format("Stream '%s' mevcut. Subjects: %s", streamName, info.getConfiguration().getSubjects()));
             return info;
         } catch (JetStreamApiException e) {
@@ -254,12 +304,16 @@ public abstract class BaseNode {
 
     /**
      * Verilen subject'in ait olduğu stream adını belirler.
+     * 'stream.' ile başlayan konular varsayılan STREAM_MIMARI stream'ine doğrudan çözümlenir.
      */
     public String resolveStreamName(String subject) {
+        if (subject == null) {
+            return DEFAULT_STREAM_NAME;
+        }
         if (subjectToStreamMap.containsKey(subject)) {
             return subjectToStreamMap.get(subject);
         }
-        if (knownStreams.contains(DEFAULT_STREAM_NAME)) {
+        if (subject.startsWith("stream.") || knownStreams.contains(DEFAULT_STREAM_NAME)) {
             return DEFAULT_STREAM_NAME;
         }
         try {
@@ -280,6 +334,7 @@ public abstract class BaseNode {
     // =========================================================================
 
     public void publishCore(String subject, byte[] data) {
+        validateCoreSubject(subject);
         ensureConnected();
         connection.publish(subject, data);
     }
@@ -294,11 +349,13 @@ public abstract class BaseNode {
     }
 
     public void publishCore(String subject, String replyTo, byte[] data) {
+        validateCoreSubject(subject);
         ensureConnected();
         connection.publish(subject, replyTo, data);
     }
 
     public Subscription subscribeCore(String subject, MessageHandler handler) {
+        validateCoreSubject(subject);
         ensureConnected();
         Subscription sub = coreDispatcher.subscribe(subject, handler);
         coreSubscriptions.put(subject, sub);
@@ -307,6 +364,7 @@ public abstract class BaseNode {
     }
 
     public Subscription subscribeCore(String subject, String queueGroup, MessageHandler handler) {
+        validateCoreSubject(subject);
         ensureConnected();
         Subscription sub = coreDispatcher.subscribe(subject, queueGroup, handler);
         coreSubscriptions.put(subject, sub);
@@ -345,6 +403,7 @@ public abstract class BaseNode {
     // =========================================================================
 
     public PublishAck publishStream(String subject, byte[] data) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
         ensureJetStream();
         return jetStream.publish(subject, data);
     }
@@ -359,6 +418,7 @@ public abstract class BaseNode {
     }
 
     public CompletableFuture<PublishAck> publishStreamAsync(String subject, byte[] data) {
+        validateStreamSubject(subject);
         ensureJetStream();
         return jetStream.publishAsync(subject, data);
     }
@@ -385,6 +445,7 @@ public abstract class BaseNode {
      * @return MessageInfo sarmalayıcısı (varsa)
      */
     public Optional<MessageInfo> getLastMessage(String streamName, String subject) {
+        validateStreamSubject(subject);
         ensureJetStream();
         try {
             MessageInfo info = jetStreamManagement.getLastMessage(streamName, subject);
@@ -448,6 +509,7 @@ public abstract class BaseNode {
      * Eski geçmiş mesajları tüketiciye tekrar akıtmaz.
      */
     public JetStreamSubscription subscribeStreamLive(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
         ensureJetStream();
         ConsumerConfiguration cc = ConsumerConfiguration.builder()
                 .deliverPolicy(DeliverPolicy.New)
@@ -479,6 +541,7 @@ public abstract class BaseNode {
      * Standart JetStream dinleme.
      */
     public JetStreamSubscription subscribeStream(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
         ensureJetStream();
         JetStreamSubscription sub = jetStream.subscribe(subject, streamDispatcher, handler, autoAck);
         streamSubscriptions.put(subject, sub);
@@ -487,6 +550,7 @@ public abstract class BaseNode {
     }
 
     public JetStreamSubscription subscribeStream(String subject, PushSubscribeOptions options, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
         ensureJetStream();
         JetStreamSubscription sub = jetStream.subscribe(subject, streamDispatcher, handler, autoAck, options);
         streamSubscriptions.put(subject, sub);
@@ -495,6 +559,7 @@ public abstract class BaseNode {
     }
 
     public JetStreamSubscription subscribeStream(String subject, String queueGroup, PushSubscribeOptions options, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
         ensureJetStream();
         JetStreamSubscription sub = jetStream.subscribe(subject, queueGroup, streamDispatcher, handler, autoAck, options);
         streamSubscriptions.put(subject, sub);
@@ -531,6 +596,14 @@ public abstract class BaseNode {
     // =========================================================================
     // YARDIMCI METOTLAR
     // =========================================================================
+
+    public boolean isStrictTopicValidation() {
+        return strictTopicValidation;
+    }
+
+    public void setStrictTopicValidation(boolean strictTopicValidation) {
+        this.strictTopicValidation = strictTopicValidation;
+    }
 
     public Gson getGson() {
         return gson;
@@ -589,4 +662,3 @@ public abstract class BaseNode {
         System.out.printf("[%s] %s%n", nodeId, message);
     }
 }
-

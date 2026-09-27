@@ -90,13 +90,29 @@ Parent olarak `stream-mimari` referans verilmeli ve `base` bağımlılığı ekl
 ```
 
 ### 4. `App.java` Sınıfını `BaseNode`'dan Extend Ederek Oluşturma
+Yeni düğüm, çift katmanlı mimari standartlarına (NATS Core anlık + JetStream geçmiş hafızası) tam uyumlu olarak üretilmelidir:
 ```java
 package com.stream.nodeX;
 
 import com.stream.base.BaseNode;
+import com.stream.base.StreamRecord;
 import io.nats.client.Message;
+import java.util.Optional;
 
 public class App extends BaseNode {
+
+    public static class NodeXData {
+        public String nodeId;
+        public String status;
+        public long timestamp;
+
+        public NodeXData() {}
+        public NodeXData(String nodeId, String status) {
+            this.nodeId = nodeId;
+            this.status = status;
+            this.timestamp = System.currentTimeMillis();
+        }
+    }
 
     public App() {
         super("node-X");
@@ -104,21 +120,24 @@ public class App extends BaseNode {
 
     @Override
     protected void onStart() throws Exception {
-        log("Node-X başlatıldı. Abonelikler ve akışlar hazırlanıyor...");
+        log("Node-X başlatıldı. Çift katmanlı akış hazırlanıyor...");
         
-        // Örnek: JetStream stream'inin varlığını garantiye al
-        ensureStream("STREAM_NODES", "stream.orders.*", "stream.alerts");
+        // 1. JetStream merkezi stream'ini garantiye al (allowDirect=true ile)
+        ensureDefaultStream();
 
-        // Örnek: Core NATS aboneliği
-        subscribeCore("core.nodeX.input", msg -> {
-            log("Core mesajı alındı: " + new String(msg.getData()));
+        // 2. NATS Core: Minimum gecikmeli anlık komut dinleme
+        subscribeCore("core.nodeX.commands", msg -> {
+            log("Core komut mesajı alındı: " + new String(msg.getData()));
         });
 
-        // Örnek: JetStream aboneliği
-        subscribeStream("stream.orders.new", msg -> {
-            log("Sipariş işlendi.");
-            msg.ack();
-        }, false);
+        // 3. JetStream: Canlı yeni olayları dinleme (DeliverPolicy.New ile eski geçmişi tekrar etmez)
+        subscribeStreamLiveJson("stream.nodeX.events", NodeXData.class, (data, msg) -> {
+            log("Canlı stream olayı yakalandı: " + data.status);
+        }, true);
+
+        // 4. Örnek: Geçmişten son durumu çekme (Direct Get)
+        Optional<StreamRecord<NodeXData>> lastState = getLastMessageRecord("stream.nodeX.events", NodeXData.class);
+        lastState.ifPresent(rec -> log("Geçmişteki son durum: " + rec.getPayload().status));
     }
 
     @Override

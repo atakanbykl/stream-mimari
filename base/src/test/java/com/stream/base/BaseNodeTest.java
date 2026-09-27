@@ -76,6 +76,28 @@ public class BaseNodeTest {
         assertEquals(BaseNode.DEFAULT_STREAM_NAME, stream);
     }
 
+    @Test
+    public void testTopicValidation() {
+        DummyNode node = new DummyNode();
+
+        // Geçerli konular
+        assertDoesNotThrow(() -> node.validateCoreSubject("core.telemetry"));
+        assertDoesNotThrow(() -> node.validateStreamSubject("stream.device.state"));
+
+        // Katı doğrulama (strict validation) testi
+        node.setStrictTopicValidation(true);
+
+        // Core konusuna stream. öneki verilirse istisna fırlatmalı
+        assertThrows(IllegalArgumentException.class, () -> node.validateCoreSubject("stream.wrong.core"));
+
+        // Stream konusuna core. öneki verilirse istisna fırlatmalı
+        assertThrows(IllegalArgumentException.class, () -> node.validateStreamSubject("core.wrong.stream"));
+
+        // Boş konu istisna fırlatmalı
+        assertThrows(IllegalArgumentException.class, () -> node.validateCoreSubject(""));
+        assertThrows(IllegalArgumentException.class, () -> node.validateStreamSubject(null));
+    }
+
     static class SamplePayload {
         String name;
         double value;
@@ -87,4 +109,3 @@ public class BaseNodeTest {
         }
     }
 }
-
