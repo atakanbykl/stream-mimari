@@ -76,6 +76,22 @@ Parent olarak `stream-mimari` referans verilmeli ve `base` bağımlılığı ekl
 
     <build>
         <plugins>
+            <!-- Maven Jar Plugin: NetBeans ve çalıştırılabilir JAR için Manifest Main-Class -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.stream.nodeX.App</mainClass>
+                            <addClasspath>true</addClasspath>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <!-- Maven Exec Plugin -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -90,7 +106,7 @@ Parent olarak `stream-mimari` referans verilmeli ve `base` bağımlılığı ekl
 ```
 
 ### 4. `App.java` Sınıfını `BaseNode`'dan Extend Ederek Oluşturma
-Yeni düğüm, çift katmanlı mimari standartlarına (NATS Core anlık + JetStream geçmiş hafızası) tam uyumlu olarak üretilmelidir:
+Yeni düğüm doğrudan çalıştırılabilir bir `main(String[] args)` içerir ve çift katmanlı mimari standartlarına (NATS Core anlık + JetStream geçmiş hafızası) tam uyumlu olarak üretilir:
 ```java
 package com.stream.nodeX;
 
@@ -149,7 +165,12 @@ public class App extends BaseNode {
     public static void main(String[] args) {
         App node = new App();
         Runtime.getRuntime().addShutdownHook(new Thread(node::stop));
-        node.start();
+        try {
+            node.start();
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            node.stop();
+        }
     }
 }
 ```

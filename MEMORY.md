@@ -118,7 +118,13 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
 - **Neden:** `node-1`, `base` modülüne bağımlıdır. Çoklu modül projelerinde alt modüller henüz yerel Maven önbelleğine (`~/.m2/repository`) kurulmamışken tekil derlenirse Maven bağımlılığı bulamaz.
 - **Çözüm:** 
   - NetBeans Maven CLI (`mvn clean install`) kök `stream-mimari` projesi üzerinde çalıştırılarak reaktör sırasına göre (`stream-mimari` -> `base` -> `node-1`) tüm kütüphaneler yerel `.m2` deposuna derlendi ve kuruldu (`BUILD SUCCESS`).
-  - `BaseNode` içine `isConnected()` kontrolü ve offline koruması eklendi. Böylece NATS sunucusu aktif değilken veya birim testleri (unit tests) çalışırken `IllegalStateException` yerine uyarı logu basılarak testlerin sorunsuz geçmesi sağlandı.
+### [Adım 10] Tek Sınıf Başlatıcı (App.java) ve NetBeans Run Entegrasyonu
+- **Mimari Karar:** Gereksiz sınıf fazlalığını önlemek için ayrı bir `Main.java` yerine doğrudan [`App.java`](./node-1/src/main/java/com/stream/node1/App.java) ana başlatıcı sınıf olarak belirlendi.
+- **Yapılanlar:**
+  - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java) içerisindeki `public static void main(String[] args)` fonksiyonu güçlendirildi: Başlangıç/bitiş logları, JVM shutdown hook ve ana thread'in düşmesini engelleyen `join()` bekletmesi eklendi.
+  - [`node-1/pom.xml`](./node-1/pom.xml) içerisine `maven-jar-plugin` eklenerek üretilen JAR manifestine `Main-Class: com.stream.node1.App` damgalandı ve `exec.mainClass` olarak `App` tanımlandı.
+  - NetBeans IDE'nin F6/Run, Debug ve Profile kısayollarını doğrudan `App.java` üzerinden tetiklemesi için `node-1/nbactions.xml` yapılandırıldı.
+  - `stream-node-creator` becerisi (`SKILL.md`) yeni oluşturulacak düğümlerde de bu sade standardı uygulayacak şekilde senkronize edildi.
 
 ---
 

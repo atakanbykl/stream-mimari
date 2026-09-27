@@ -31,3 +31,7 @@ out/
 # OS files
 .DS_Store
 Thumbs.db
+
+# NATS JetStream runtime storage
+nats-data/
+nats-server.log

@@ -298,10 +298,32 @@ public class App extends BaseNode {
     public double getOdometerKm() { return odometerKm; }
     public DriverProfile getActiveProfile() { return activeProfile; }
     public boolean isMaintenanceWarningActive() { return maintenanceWarningActive; }
+    // =========================================================================
+    // ANA ÇALIŞTIRICI METOT (MAIN ENTRY POINT)
+    // =========================================================================
 
     public static void main(String[] args) {
+        System.out.println("=================================================");
+        System.out.println(">> node-1 (Connected Car ECU) Başlatılıyor... <<");
+        System.out.println("=================================================");
+
         App carNode = new App();
-        Runtime.getRuntime().addShutdownHook(new Thread(carNode::stop));
-        carNode.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n>> Kapatma sinyali alındı, node-1 durduruluyor... <<");
+            carNode.stop();
+        }));
+
+        try {
+            carNode.start();
+            System.out.println(">> node-1 başarıyla ayağa kalktı ve dinlemede. Çıkmak için Ctrl+C tuşlayınız. <<");
+            // Ana thread'in kapanmasını önleyip arka plan zamanlayıcı ve dinleyicilerini ayakta tut
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            carNode.stop();
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.err.println(">> node-1 başlatılamadı: " + e.getMessage());
+            System.err.println(">> İpucu: NATS sunucusunun (nats-server) varsayılan 4222 portunda çalıştığından emin olun.");
+        }
     }
 }
