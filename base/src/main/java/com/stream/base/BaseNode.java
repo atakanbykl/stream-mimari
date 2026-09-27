@@ -333,9 +333,16 @@ public abstract class BaseNode {
     // 1. NATS CORE - PUBLISH & SUBSCRIBE (ULTRA DÜŞÜK GECİKME)
     // =========================================================================
 
+    public boolean isConnected() {
+        return connection != null && connection.getStatus() == Connection.Status.CONNECTED;
+    }
+
     public void publishCore(String subject, byte[] data) {
         validateCoreSubject(subject);
-        ensureConnected();
+        if (!isConnected()) {
+            log(String.format("[UYARI] NATS bağlantısı aktif değil, '%s' konusuna mesaj gönderilemedi.", subject));
+            return;
+        }
         connection.publish(subject, data);
     }
 
@@ -350,7 +357,10 @@ public abstract class BaseNode {
 
     public void publishCore(String subject, String replyTo, byte[] data) {
         validateCoreSubject(subject);
-        ensureConnected();
+        if (!isConnected()) {
+            log(String.format("[UYARI] NATS bağlantısı aktif değil, '%s' konusuna yanıt gönderilemedi.", subject));
+            return;
+        }
         connection.publish(subject, replyTo, data);
     }
 
@@ -446,7 +456,9 @@ public abstract class BaseNode {
      */
     public Optional<MessageInfo> getLastMessage(String streamName, String subject) {
         validateStreamSubject(subject);
-        ensureJetStream();
+        if (!isConnected() || jetStreamManagement == null) {
+            return Optional.empty();
+        }
         try {
             MessageInfo info = jetStreamManagement.getLastMessage(streamName, subject);
             if (info != null && info.hasError()) {

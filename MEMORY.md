@@ -113,6 +113,13 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
   - `GEMINI.md`, `SKILL.md` ve `base/README.md` kuralları güncellendi.
   - Yeni oluşturulacak tüm düğümler (`node-2`, `node-3`, vb.) `base` bağımlılığı sayesinde bu modellere doğrudan erişebilir hale getirildi.
 
+### [Adım 9] Maven Çoklu Modül Derleme Çözümü ve Offline Test Güvenliği
+- **Karşılaşılan Durum:** NetBeans üzerinden `node-1` tek başına derlendiğinde `Could not find artifact com.stream:base:jar:1.0-SNAPSHOT` hatası alındı.
+- **Neden:** `node-1`, `base` modülüne bağımlıdır. Çoklu modül projelerinde alt modüller henüz yerel Maven önbelleğine (`~/.m2/repository`) kurulmamışken tekil derlenirse Maven bağımlılığı bulamaz.
+- **Çözüm:** 
+  - NetBeans Maven CLI (`mvn clean install`) kök `stream-mimari` projesi üzerinde çalıştırılarak reaktör sırasına göre (`stream-mimari` -> `base` -> `node-1`) tüm kütüphaneler yerel `.m2` deposuna derlendi ve kuruldu (`BUILD SUCCESS`).
+  - `BaseNode` içine `isConnected()` kontrolü ve offline koruması eklendi. Böylece NATS sunucusu aktif değilken veya birim testleri (unit tests) çalışırken `IllegalStateException` yerine uyarı logu basılarak testlerin sorunsuz geçmesi sağlandı.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları
