@@ -166,19 +166,51 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
     - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java): Başlatılırken dış dosyanın varlığını ve tüm 8 topic'in (`core.` / `stream.` mimari standartları) ve eşik değerlerinin doğrulanmasını zorunlu kıldı.
   - **Birim Testleri:** `NodeConfigTest` ve `AppTest` güncellendi, 20 birim testinin tamamı başarıyla (`BUILD SUCCESS`) geçti.
 
+### [Adım 15] Kalıcı ve Tahribatsız Geçmiş Hafızası Standartları (Immutable Event Memory)
+- **Hedef:** Kullanıcının en kritik gereksinimi: Stream'in geçmişin hafızası olması, pub ve sub işlemlerinin hafızayı asla bozmaması, istenen an geçmiş verinin Direct Get ile çekilebilmesi, çekildiğinde verinin stream'de kalmaya devam etmesi ve başka istemciler tarafından tekrar tekrar çekilebilir olmasının garanti altına alınması.
+- **Yapılan İyileştirmeler:**
+  - **Kalıcı Hafıza Koruma Kalkanı (`BaseNode.ensureStream`):**
+    - `retentionPolicy(RetentionPolicy.Limits)` zorunlu kılındı (Subscribers mesajları ACK'lese dahi mesajlar silinmez).
+    - `allowDirect(true)` zorunlu kılındı (Tüketici maliyetine girmeden anlık doğrudan okuma).
+    - `denyDelete(true)` ve `denyPurge(true)` eklendi (Stream ve mesajların dışarıdan silinmesi/temizlenmesi engellendi).
+    - `maxMessagesPerSubject(-1)` zorunlu kılındı (Yeni yayınlar eski durum mesajlarının üzerine yazılmaz).
+    - `discardPolicy(DiscardPolicy.Old)` FIFO olayı güvenceye alındı.
+    - Halihazırda var olan stream'ler çalışma zamanında `jetStreamManagement.updateStream(...)` ile otomatik olarak bu standartlara güncellendi.
+  - **Zenginleştirilmiş Tahribatsız Geçmiş Sorgulama API'si:**
+    - `getMessageBySequence(sequence)` ve `getMessageRecordBySequence(...)`
+    - `getFirstMessage(subject)` ve `getFirstMessageRecord(...)`
+    - `getNextMessage(sequence, subject)` ve `getNextMessageRecord(...)`
+    - `getHistoricalRecords(subject, clazz, limit)`: Konunun tüm geçmişini veya son N kaydını non-destructive liste olarak çekme.
+  - **Geçmişi Yeniden Oynatma (Replay):**
+    - `subscribeStreamReplay(subject, handler)` (`DeliverPolicy.All`)
+    - `subscribeStreamFromSequence(subject, startSequence, handler)` (`DeliverPolicy.ByStartSequence`)
+  - **GUI Entegrasyonu (`Node1Dashboard.java`):**
+    - "📜 Tüm Durum Geçmişini Listele" butonu eklendi, Direct Get ile tüm geçmişin bozulmadan tekrar tekrar çekilebildiği görselleştirildi.
+  - **Doğrulama ve Bütünlük Testleri (`StreamMemoryIntegrityTest.java`):**
+    - 6 aşamalı katı entegrasyon testi yazıldı ve NATS üzerinde çalıştırıldı:
+      1. Stream konfigürasyonunun immutability garantileri doğrulandı.
+      2. Yayınlanan mesajların sıra numaralarıyla biriktiği kanıtlandı.
+      3. Bağımsız iki okuyucunun (Node A ve Node B) aynı geçmiş veriyi tahribatsız çektiği doğrulandı.
+      4. `getHistoricalRecords` ile tüm kronolojinin çekildiği kanıtlandı.
+      5. Tüketicilerin ACK vermesinin stream'den mesajları SİLMEDİĞİ kesin olarak kanıtlandı.
+      6. `subscribeStreamReplay` ile geçmişin baştan sona eksiksiz oynatılabildiği ve verinin stream'de kaldığı doğrulandı.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları
 1. **Topic İsimlendirme:**
    - Core NATS: `core.<kategori>.<olay>` (Örn: `core.telemetry`, `core.commands`)
    - JetStream: `stream.<kategori>.<olay>` (Örn: `stream.orders.new`, `stream.alerts`)
-2. **Onaylama (ACK):**
-   - JetStream aboneliklerinde `autoAck=false` açıldıysa iş mantığı sonunda `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile mesaj kuyrukta tutulmalıdır.
-3. **JSON Serileştirme:**
+2. **Kalıcı Geçmiş Hafızası:**
+   - JetStream stream'leri mutlaka `Limits`, `allowDirect=true`, `denyDelete=true`, `denyPurge=true` ve `maxMessagesPerSubject=-1` ile korunmalıdır.
+   - Pub ve Sub işlemleri stream hafızasını asla bozmaz.
+3. **Onaylama (ACK):**
+   - JetStream aboneliklerinde `autoAck=false` açıldıysa iş mantığı sonunda `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile mesaj kuyrukta tutulmalıdır. ACK vermek yalnızca o abonenin okuma durumunu günceller, stream'deki veriyi asla silmez.
+4. **JSON Serileştirme:**
    - Dış bağımlılık eklemek yerine `BaseNode` içindeki `toJson(...)` ve `fromJson(...)` metotları kullanılmalıdır.
-4. **Konfigürasyon Yönetimi:**
+5. **Konfigürasyon Yönetimi:**
    - Topic adları, NATS URL'leri ve periyotlar asla Java koduna hardcoded yazılmamalı; `BaseNode.getConfig()` (`NodeConfig`) ve dış `application.properties` üzerinden okunmalıdır.
-5. **Node Kapatma:**
+6. **Node Kapatma:**
    - Uygulama ana metotlarında `Runtime.getRuntime().addShutdownHook(new Thread(node::stop));` kullanılmalıdır.
 
 ---
@@ -187,7 +219,9 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
 - [ ] Yeni düğümlerin (`node-2`, `node-3`, vb.) eklenmesi ve düğümler arası veri akışının test edilmesi.
 - [x] NATS sunucusu ayarları ve ortam değişkenlerinden (Environment Variables / Config) NATS URL ve topic okuma desteği (`NodeConfig`).
 - [x] Tekil dış dosya tabanlı yapılandırma ve modal hata bildirimli çalışma zamanı doğrulama altyapısı.
+- [x] Kalıcı, değişmez (immutable) ve tahribatsız (non-destructive) stream geçmiş hafızası mimarisi.
 - [ ] Mesaj yeniden deneme (retry) ve Dead Letter Queue (DLQ) mekanizması.
 - [ ] İhtiyaç duyuldukça yeni Skill, Rule, Hook ve MCP entegrasyonlarının hafızaya ve projeye işlenmesi.
+
 
 

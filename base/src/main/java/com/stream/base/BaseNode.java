@@ -119,7 +119,11 @@ public abstract class BaseNode {
             // JetStream aboneliklerini sonlandır
             for (Map.Entry<String, JetStreamSubscription> entry : streamSubscriptions.entrySet()) {
                 try {
-                    entry.getValue().unsubscribe();
+                    if (streamDispatcher != null) {
+                        streamDispatcher.unsubscribe(entry.getValue());
+                    } else {
+                        entry.getValue().unsubscribe();
+                    }
                 } catch (Exception ignored) {}
             }
             streamSubscriptions.clear();
@@ -277,7 +281,15 @@ public abstract class BaseNode {
 
     /**
      * JetStream üzerinde belirtilen stream'in varlığından emin olur.
-     * Direct Get (allowDirect = true) ve kalıcılık (RetentionPolicy.Limits) standartlarını zorunlu kılar.
+     * Geçmiş hafızasının kesinlikle bozulmaması için:
+     * - RetentionPolicy.Limits (Subscribers mesajları ACK verse bile stream'den silinmez)
+     * - allowDirect = true (İstenen an doğrudan ve tahribatsız Direct Get sorgusu)
+     * - denyDelete = true (Mesajların dışarıdan veya koddan tekil silinmesi engellenir)
+     * - denyPurge = true (Stream'in tamamen temizlenmesi/silinmesi engellenir)
+     * - discardPolicy = DiscardPolicy.Old (Kapasite durumunda FIFO kuralı)
+     * - maxMessagesPerSubject = -1 (Yeni yayınlar eski mesajların üzerine yazılmaz, tüm geçmiş korunur)
+     *
+     * Mevcut bir stream bulunursa bu koruma standartları updateStream ile otomatik uygulanır.
      *
      * @param streamName Stream adı
      * @param storageType File veya Memory saklama
@@ -292,12 +304,54 @@ public abstract class BaseNode {
                 subjectToStreamMap.put(sub, streamName);
             }
 
-            // Mevcut stream üzerinde allowDirect kontrolü
-            if (info.getConfiguration() != null && !info.getConfiguration().getAllowDirect()) {
-                log(String.format("[UYARI] '%s' stream'inde allowDirect aktif değil! Direct Get (son mesaj çekme) kısıtlanabilir.", streamName));
+            // Mevcut stream üzerinde kalıcı hafıza koruma standartlarını doğrula ve güncelle
+            StreamConfiguration curr = info.getConfiguration();
+            if (curr != null) {
+                boolean needsUpdate = false;
+                StreamConfiguration.Builder updateBuilder = StreamConfiguration.builder(curr);
+
+                if (!curr.getAllowDirect()) {
+                    updateBuilder.allowDirect(true);
+                    needsUpdate = true;
+                }
+                if (curr.getRetentionPolicy() != RetentionPolicy.Limits) {
+                    log(String.format("⚠️ [KRİTİK GÜNCELLEME] '%s' stream'i RetentionPolicy.Limits olarak güncelleniyor (Geçmiş hafızasının korunması için)!", streamName));
+                    updateBuilder.retentionPolicy(RetentionPolicy.Limits);
+                    needsUpdate = true;
+                }
+                if (!curr.getDenyDelete()) {
+                    updateBuilder.denyDelete(true);
+                    needsUpdate = true;
+                }
+                if (!curr.getDenyPurge()) {
+                    updateBuilder.denyPurge(true);
+                    needsUpdate = true;
+                }
+                if (curr.getMaxMsgsPerSubject() != -1) {
+                    updateBuilder.maxMessagesPerSubject(-1);
+                    needsUpdate = true;
+                }
+                if (curr.getDiscardPolicy() != DiscardPolicy.Old) {
+                    updateBuilder.discardPolicy(DiscardPolicy.Old);
+                    needsUpdate = true;
+                }
+
+                // Konu kalıplarını birleştir
+                List<String> existingSubs = curr.getSubjects() != null ? curr.getSubjects() : Collections.emptyList();
+                Set<String> mergedSubs = new LinkedHashSet<>(existingSubs);
+                for (String sub : subjects) {
+                    if (mergedSubs.add(sub)) {
+                        needsUpdate = true;
+                    }
+                }
+                if (needsUpdate) {
+                    updateBuilder.subjects(new ArrayList<>(mergedSubs));
+                    info = jetStreamManagement.updateStream(updateBuilder.build());
+                    log(String.format("Stream '%s' kalıcı geçmiş hafızası koruma standartlarına güncellendi (Limits, allowDirect=true, denyDelete=true, denyPurge=true).", streamName));
+                }
             }
 
-            log(String.format("Stream '%s' mevcut. Subjects: %s", streamName, info.getConfiguration().getSubjects()));
+            log(String.format("Stream '%s' kalıcı hafızası hazır ve koruma altında. Subjects: %s", streamName, info.getConfiguration().getSubjects()));
             return info;
         } catch (JetStreamApiException e) {
             if (e.getErrorCode() == 10059 || e.getMessage().toLowerCase().contains("stream not found")) {
@@ -305,15 +359,20 @@ public abstract class BaseNode {
                         .name(streamName)
                         .subjects(subjects)
                         .storageType(storageType != null ? storageType : StorageType.File)
-                        .retentionPolicy(RetentionPolicy.Limits)
+                        .retentionPolicy(RetentionPolicy.Limits) // Pub/Sub mesajları ASLA silmez
+                        .discardPolicy(DiscardPolicy.Old)
                         .allowDirect(true) // Doğrudan son mesajı çekebilmek (Direct Get) için ZORUNLU
+                        .denyDelete(true) // Geçmiş mesajların tekil silinmesini engeller
+                        .denyPurge(true) // Stream'in tamamen temizlenmesini engeller
+                        .maxMessagesPerSubject(-1) // Konu bazlı eski mesajları silmez, tüm geçmişi tutar
                         .build();
                 StreamInfo created = jetStreamManagement.addStream(config);
                 knownStreams.add(streamName);
                 for (String sub : subjects) {
                     subjectToStreamMap.put(sub, streamName);
                 }
-                log(String.format("Yeni JetStream stream oluşturuldu (allowDirect=true): '%s', Subjects: %s", streamName, Arrays.toString(subjects)));
+                log(String.format("Yeni JetStream stream oluşturuldu (Kalıcı Geçmiş Hafızası: Limits, allowDirect=true, denyDelete=true, denyPurge=true): '%s', Subjects: %s",
+                        streamName, Arrays.toString(subjects)));
                 return created;
             }
             throw e;
@@ -534,6 +593,169 @@ public abstract class BaseNode {
         });
     }
 
+    /**
+     * Belirtilen stream ve sıra numarası (sequence) için geçmişteki mesajı doğrudan çeker.
+     * Bu işlem Direct Get kullandığı için veriyi stream'den KESİNLİKLE SİLMEZ ve değiştirmez.
+     *
+     * @param streamName Stream adı
+     * @param sequence Sıra numarası (1, 2, ...)
+     * @return MessageInfo sarmalayıcısı (varsa)
+     */
+    public Optional<MessageInfo> getMessageBySequence(String streamName, long sequence) {
+        if (!isConnected() || jetStreamManagement == null) {
+            return Optional.empty();
+        }
+        try {
+            MessageInfo info = jetStreamManagement.getMessage(streamName, sequence);
+            if (info != null && info.hasError()) {
+                return Optional.empty();
+            }
+            return Optional.ofNullable(info);
+        } catch (JetStreamApiException e) {
+            if (e.getErrorCode() == 10037 || e.getMessage().toLowerCase().contains("no message found")) {
+                return Optional.empty();
+            }
+            return Optional.empty();
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    public Optional<MessageInfo> getMessageBySequence(long sequence) {
+        String defaultStream = config.getString(NodeConfig.NATS_STREAM_NAME, DEFAULT_STREAM_NAME);
+        return getMessageBySequence(defaultStream, sequence);
+    }
+
+    public Optional<String> getMessageTextBySequence(long sequence) {
+        return getMessageBySequence(sequence).map(msg -> new String(msg.getData(), StandardCharsets.UTF_8));
+    }
+
+    public <T> Optional<T> getMessageJsonBySequence(long sequence, Class<T> clazz) {
+        return getMessageBySequence(sequence).map(msg -> fromJson(msg.getData(), clazz));
+    }
+
+    public <T> Optional<StreamRecord<T>> getMessageRecordBySequence(long sequence, Class<T> clazz) {
+        return getMessageBySequence(sequence).map(msg -> {
+            T payload = fromJson(msg.getData(), clazz);
+            return new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders());
+        });
+    }
+
+    /**
+     * Belirtilen konu (subject) için stream'e kaydedilmiş ilk (en eski) mesajı çeker.
+     * Direct Get kullandığı için veriyi silmez, stream hafızasını bozmaz.
+     */
+    public Optional<MessageInfo> getFirstMessage(String streamName, String subject) {
+        validateStreamSubject(subject);
+        if (!isConnected() || jetStreamManagement == null) {
+            return Optional.empty();
+        }
+        try {
+            MessageInfo info = jetStreamManagement.getFirstMessage(streamName, subject);
+            if (info != null && info.hasError()) {
+                return Optional.empty();
+            }
+            return Optional.ofNullable(info);
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    public Optional<MessageInfo> getFirstMessage(String subject) {
+        String streamName = resolveStreamName(subject);
+        return getFirstMessage(streamName, subject);
+    }
+
+    public Optional<String> getFirstMessageText(String subject) {
+        return getFirstMessage(subject).map(msg -> new String(msg.getData(), StandardCharsets.UTF_8));
+    }
+
+    public <T> Optional<T> getFirstMessageJson(String subject, Class<T> clazz) {
+        return getFirstMessage(subject).map(msg -> fromJson(msg.getData(), clazz));
+    }
+
+    public <T> Optional<StreamRecord<T>> getFirstMessageRecord(String subject, Class<T> clazz) {
+        return getFirstMessage(subject).map(msg -> {
+            T payload = fromJson(msg.getData(), clazz);
+            return new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders());
+        });
+    }
+
+    /**
+     * Belirtilen konu için verilen sıra numarasından (sequence) sonraki mesajı çeker.
+     */
+    public Optional<MessageInfo> getNextMessage(String streamName, long sequence, String subject) {
+        validateStreamSubject(subject);
+        if (!isConnected() || jetStreamManagement == null) {
+            return Optional.empty();
+        }
+        try {
+            MessageInfo info = jetStreamManagement.getNextMessage(streamName, sequence, subject);
+            if (info != null && info.hasError()) {
+                return Optional.empty();
+            }
+            return Optional.ofNullable(info);
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    public Optional<MessageInfo> getNextMessage(long sequence, String subject) {
+        String streamName = resolveStreamName(subject);
+        return getNextMessage(streamName, sequence, subject);
+    }
+
+    public <T> Optional<StreamRecord<T>> getNextMessageRecord(long sequence, String subject, Class<T> clazz) {
+        return getNextMessage(sequence, subject).map(msg -> {
+            T payload = fromJson(msg.getData(), clazz);
+            return new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders());
+        });
+    }
+
+    /**
+     * Belirtilen konu (subject) için geçmişteki tüm mesajları (veya limit adede kadar)
+     * Direct Get kullanarak stream'den liste olarak çeker.
+     * 
+     * BU İŞLEM STREAM HAFIZASINI ASLA BOZMAZ VEYA DEĞİŞTİRMEZ.
+     * Çekilen tüm mesajlar stream içinde kalmaya devam eder ve başka düğümler
+     * veya sorgular tarafından tekrar tekrar çekilebilir.
+     *
+     * @param subject İlgili konu
+     * @param clazz Model sınıfı
+     * @param limit Maksimum getirilecek kayıt sayısı (0 veya negatif ise sınırsız)
+     * @return Kronolojik sıralı geçmiş kayıt listesi
+     */
+    public <T> List<StreamRecord<T>> getHistoricalRecords(String subject, Class<T> clazz, int limit) {
+        validateStreamSubject(subject);
+        List<StreamRecord<T>> records = new ArrayList<>();
+        if (!isConnected() || jetStreamManagement == null) {
+            return records;
+        }
+
+        String streamName = resolveStreamName(subject);
+        Optional<MessageInfo> currentOpt = getFirstMessage(streamName, subject);
+        int count = 0;
+
+        while (currentOpt.isPresent() && (limit <= 0 || count < limit)) {
+            MessageInfo msg = currentOpt.get();
+            try {
+                T payload = fromJson(msg.getData(), clazz);
+                records.add(new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders()));
+            } catch (Exception e) {
+                log(String.format("Geçmiş mesaj ayrıştırma hatası [Sıra: %d]: %s", msg.getSeq(), e.getMessage()));
+            }
+            count++;
+
+            // Bir sonraki mesajı sorgula (sequence + 1'den itibaren)
+            currentOpt = getNextMessage(streamName, msg.getSeq() + 1, subject);
+        }
+        return records;
+    }
+
+    public <T> List<StreamRecord<T>> getHistoricalRecords(String subject, Class<T> clazz) {
+        return getHistoricalRecords(subject, clazz, 0);
+    }
+
     // =========================================================================
     // 4. JETSTREAM - ANLIK VE GEÇMİŞ ABONELİKLER (SUBSCRIBE)
     // =========================================================================
@@ -564,6 +786,71 @@ public abstract class BaseNode {
                 handler.handle(obj, msg);
             } catch (Exception e) {
                 log(String.format("Canlı Stream JSON hatası ('%s'): %s", subject, e.getMessage()));
+                if (!autoAck) {
+                    msg.nak();
+                }
+            }
+        }, autoAck);
+    }
+
+    /**
+     * JetStream GEÇMİŞTEN YENİDEN OYNATMA (REPLAY):
+     * Konunun geçmişteki TÜM mesajlarını en baştan itibaren (DeliverPolicy.All) dinler
+     * ve ardından canlı gelenleri almaya devam eder.
+     * 
+     * RetentionPolicy.Limits sayesinde mesajların okunması ve ACK verilmesi
+     * stream hafızasından mesajları KESİNLİKLE SİLMEZ. Başka tüketiciler de bağımsız olarak okuyabilir.
+     */
+    public JetStreamSubscription subscribeStreamReplay(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
+        ensureJetStream();
+        ConsumerConfiguration cc = ConsumerConfiguration.builder()
+                .deliverPolicy(DeliverPolicy.All)
+                .build();
+        PushSubscribeOptions pso = PushSubscribeOptions.builder()
+                .configuration(cc)
+                .build();
+        return subscribeStream(subject, pso, handler, autoAck);
+    }
+
+    public <T> JetStreamSubscription subscribeStreamReplayJson(String subject, Class<T> clazz, StreamItemHandler<T> handler, boolean autoAck) throws IOException, JetStreamApiException {
+        return subscribeStreamReplay(subject, msg -> {
+            try {
+                T obj = fromJson(msg.getData(), clazz);
+                handler.handle(obj, msg);
+            } catch (Exception e) {
+                log(String.format("Stream Replay JSON hatası ('%s'): %s", subject, e.getMessage()));
+                if (!autoAck) {
+                    msg.nak();
+                }
+            }
+        }, autoAck);
+    }
+
+    /**
+     * JetStream BELİRLİ BİR SIRA NUMARASINDAN İTİBAREN DİNLEME:
+     * Belirtilen sequence numarasından başlayarak (DeliverPolicy.ByStartSequence) geçmişi ve canlıyı dinler.
+     */
+    public JetStreamSubscription subscribeStreamFromSequence(String subject, long startSequence, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
+        ensureJetStream();
+        ConsumerConfiguration cc = ConsumerConfiguration.builder()
+                .deliverPolicy(DeliverPolicy.ByStartSequence)
+                .startSequence(startSequence)
+                .build();
+        PushSubscribeOptions pso = PushSubscribeOptions.builder()
+                .configuration(cc)
+                .build();
+        return subscribeStream(subject, pso, handler, autoAck);
+    }
+
+    public <T> JetStreamSubscription subscribeStreamFromSequenceJson(String subject, long startSequence, Class<T> clazz, StreamItemHandler<T> handler, boolean autoAck) throws IOException, JetStreamApiException {
+        return subscribeStreamFromSequence(subject, startSequence, msg -> {
+            try {
+                T obj = fromJson(msg.getData(), clazz);
+                handler.handle(obj, msg);
+            } catch (Exception e) {
+                log(String.format("Stream FromSequence JSON hatası ('%s'): %s", subject, e.getMessage()));
                 if (!autoAck) {
                     msg.nak();
                 }
@@ -618,11 +905,21 @@ public abstract class BaseNode {
     public void unsubscribeStream(String subject) {
         JetStreamSubscription sub = streamSubscriptions.remove(subject);
         if (sub != null) {
+            unsubscribeStream(sub);
+            log(String.format("JetStream aboneliği kaldırıldı: '%s'", subject));
+        }
+    }
+
+    public void unsubscribeStream(JetStreamSubscription sub) {
+        if (sub != null) {
             try {
-                sub.unsubscribe();
-                log(String.format("JetStream aboneliği kaldırıldı: '%s'", subject));
+                if (streamDispatcher != null) {
+                    streamDispatcher.unsubscribe(sub);
+                } else {
+                    sub.unsubscribe();
+                }
             } catch (Exception e) {
-                log(String.format("JetStream aboneliği kaldırılırken hata: '%s' - %s", subject, e.getMessage()));
+                log("JetStream aboneliği kaldırılırken hata: " + e.getMessage());
             }
         }
     }

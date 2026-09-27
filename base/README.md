@@ -27,15 +27,18 @@ Tüm `node-*` projelerinin extend edeceği çekirdek kütüphanedir.
 - **Stream Hazırlığı:**
   - `ensureDefaultStream()`: `stream.>` desenini kapsayan merkezi `STREAM_MIMARI` akışını oluşturur veya doğrular (`allowDirect=true` ve `RetentionPolicy.Limits` ile).
   - `ensureStream(streamName, subjects...)`: Özel isimli stream tanımlar.
-- **Geçmişten Son Mesajı Çekme (Direct Get / Last-by-Subject):**
-  - `getLastMessage(subject)`: Konunun geçmişteki son mesajını `Optional<MessageInfo>` olarak döner.
-  - `getLastMessageText(subject)`: Son mesajı `Optional<String>` olarak döner.
-  - `getLastMessageJson(subject, Class<T>)`: Son mesajı `Optional<T>` olarak döner.
-  - `getLastMessageRecord(subject, Class<T>)`: Son mesajı `Optional<StreamRecord<T>>` (payload + sequence + timestamp + headers) olarak döner.
-  - *Not:* Konuda henüz mesaj yoksa (cold start) çökmez, güvenle `Optional.empty()` döner.
-- **Canlı Dinleme (Live Subscriber):**
-  - `subscribeStreamLive(subject, handler, autoAck)`: Yalnızca bu andan itibaren gelen yeni mesajları dinler (`DeliverPolicy.New`). Eski mesajları baştan okumaz.
-  - `subscribeStreamLiveJson(subject, Class<T>, handler, autoAck)`: JSON tip dönüşümlü canlı dinleme.
+- **Geçmişten Mesaj Sorgulama (Direct Get / Non-Destructive):**
+  - `getLastMessageRecord(subject, Class<T>)`: Konunun geçmişteki son mesajını `Optional<StreamRecord<T>>` olarak döner.
+  - `getMessageRecordBySequence(sequence, Class<T>)`: Belirtilen sıra numarasındaki (sequence) geçmiş mesajı döner.
+  - `getFirstMessageRecord(subject, Class<T>)`: Konunun ilk mesajını döner.
+  - `getNextMessageRecord(sequence, subject, Class<T>)`: Belirtilen sıra numarasından sonraki mesajı döner.
+  - `getHistoricalRecords(subject, Class<T>, limit)`: Konunun tüm geçmişini veya son N kaydını kronolojik liste (`List<StreamRecord<T>>`) olarak çeker.
+  - *Tahribatsızlık İlkesi:* Direct Get stream hafızasını asla bozmaz, mesajları silmez; çekilen veriler stream'de kalmaya devam eder ve tekrar tekrar çekilebilir.
+- **Canlı Dinleme ve Yeniden Oynatma (Live & Replay):**
+  - `subscribeStreamLiveJson(subject, Class<T>, handler, autoAck)`: Yalnızca yeni gelen mesajları dinler (`DeliverPolicy.New`).
+  - `subscribeStreamReplayJson(subject, Class<T>, handler, autoAck)`: Konunun tüm geçmişini en baştan itibaren oynatır (`DeliverPolicy.All`).
+  - `subscribeStreamFromSequenceJson(subject, startSeq, Class<T>, handler, autoAck)`: Belirtilen sıra numarasından itibaren dinler (`DeliverPolicy.ByStartSequence`).
+  - *Tüketici ACK Güvencesi:* Tüketicilerin ACK vermesi mesajları stream'den KESİNLİKLE SİLMEZ (`RetentionPolicy.Limits`).
 - **Yayınlama (Publish):**
   - `publishStream(subject, byte[])`, `publishStream(subject, text)`, `publishStreamJson(subject, obj)` (Senkron `PublishAck`)
   - `publishStreamAsync(...)`, `publishStreamJsonAsync(...)` (Asenkron `CompletableFuture<PublishAck>`)

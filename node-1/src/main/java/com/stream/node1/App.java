@@ -331,6 +331,20 @@ public class App extends BaseNode {
         fireStateChanged();
     }
 
+    /**
+     * JetStream kalıcı hafızasından bugüne kadar yayınlanmış tüm araç durumlarını
+     * (topicStatus) Direct Get ile liste olarak çeker ve dinleyicilere (GUI vb.) aktarır.
+     * BU SORGULAMA STREAM'DEKİ VERİLERİ ASLA DEĞİŞTİRMEZ VEYA SİLMEZ.
+     */
+    public void fetchAllHistoricalStatuses() {
+        log("Geçmiş hafızasındaki tüm araç durum kayıtları taranıyor (Topic: " + topicStatus + ")...");
+        List<StreamRecord<VehicleStatus>> records = getHistoricalRecords(topicStatus, VehicleStatus.class);
+        log(String.format("Geçmiş hafızasından %d adet kalıcı araç durum kaydı başarıyla çekildi.", records.size()));
+        for (StreamRecord<VehicleStatus> rec : records) {
+            fireHistoricalRetrieved(topicStatus, rec.getSequence(), rec.getTimestamp().toString(), rec.getPayload());
+        }
+    }
+
     // =========================================================================
     // 3. BELLİ ARALIKLARLA 3 FARKLI TOPIC YAYINLAMA (PUBLISH LOOP)
     // =========================================================================

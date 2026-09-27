@@ -14,17 +14,21 @@ Bu kurallar `stream-mimari` projesinde çalışan yapay zeka ajanı ve geliştir
 - Alt sınıflar doğrudan NATS bağlantısı oluşturmaya çalışmamalı; `BaseNode` tarafından sağlanan yaşam döngüsü (`start()`, `stop()`, `onStart()`, `onStop()`) ve metotları kullanmalıdır.
 - Thread-safe kapatma için ana sınıflarda `Runtime.getRuntime().addShutdownHook(...)` kullanılmalıdır.
 
-## 3. Çift Katmanlı Mesajlaşma ve Geçmiş Hafızası Standartları
+## 3. Çift Katmanlı Mesajlaşma ve Kalıcı Geçmiş Hafızası Standartları (Immutable Event Memory)
 - **NATS Core (Anlık / Minimum Gecikme):**
   - Topic öneki: Mutlaka `core.<kategori>.<olay>` olmalıdır.
   - Disk persistansı yoktur; telemetri, acil sinyal ve hızlı RPC komutları için kullanılır.
-- **JetStream (Sistem Hafızası & State Store):**
+- **JetStream (Sistem Kalıcı Geçmiş Hafızası & State Store):**
   - Topic öneki: Mutlaka `stream.<kategori>.<olay>` olmalıdır.
-  - Stream tanımlarında `allowDirect = true` ve `RetentionPolicy.Limits` zorunludur (`BaseNode.ensureStream` bunu otomatik uygular).
-  - **Canlı Dinleme:** Eski mesajlarla boğulmamak için canlı tüketiciler `subscribeStreamLive` (`DeliverPolicy.New`) kullanmalıdır.
-  - **Geçmişten Son Mesajı Çekme:** Herhangi bir anda bir topic'in son durumu `getLastMessage`, `getLastMessageJson` veya `getLastMessageRecord` ile doğrudan bellekten (Direct Get) çekilmelidir.
+  - **Kesin Kalıcılık ve Değişmezlik (Immutability & Non-Destructive):**
+    - Stream tanımlarında `RetentionPolicy.Limits`, `allowDirect = true`, `denyDelete = true`, `denyPurge = true`, `discardPolicy = DiscardPolicy.Old` ve `maxMessagesPerSubject = -1` ZORUNLUDUR (`BaseNode.ensureStream` bunu yeni ve mevcut tüm stream'lerde otomatik garanti eder).
+    - **Pub & Sub Asla Hafızayı Bozamaz:** Yayıncıların yeni mesaj atması veya tüketicilerin (subscribers) mesajları ACK'lemesi mesajları stream'den KESİNLİKLE SİLMEZ. Her mesaj sıra numarasıyla (sequence) kalıcı olarak saklanır.
+    - **Tahribatsız Geçmiş Sorgulama (Direct Get):** Herhangi bir anda bir veya birden fazla istemci veriyi doğrudan bellek/diskten çekebilir (`getLastMessageRecord`, `getMessageRecordBySequence`, `getFirstMessageRecord`, `getNextMessageRecord`, `getHistoricalRecords`). Veri çekildiğinde stream'de durmaya devam eder; başka bir istemci veya aynı istemci dilediği an o veriyi tekrar çekebilir.
+    - **Canlı Dinleme vs. Yeniden Oynatma (Replay):**
+      - Yalnızca yeni olaylar için: `subscribeStreamLive` (`DeliverPolicy.New`).
+      - Geçmişi baştan sona yeniden dinlemek için: `subscribeStreamReplay` (`DeliverPolicy.All`) veya `subscribeStreamFromSequence` (`DeliverPolicy.ByStartSequence`).
 - **Onaylama (ACK) Politikası:**
-  - `autoAck = false` ile açılan JetStream aboneliklerinde mesaj işlendikten sonra mutlaka `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile yeniden kuyruğa alınmalıdır.
+  - `autoAck = false` ile açılan JetStream aboneliklerinde mesaj işlendikten sonra mutlaka `msg.ack()` çağrılmalı; hata durumunda `msg.nak()` ile yeniden kuyruğa alınmalıdır. ACK vermek tüketiciye özel bir durumdur, stream'deki geçmiş veriyi KESİNLİKLE silmez.
 
 ## 4. Serileştirme, JSON ve Ortak Model Kütüphanesi
 - Düğümler arası mesajlaşmada kullanılan tüm ortak veri modelleri/DTO'lar tek bir düğüme hapsedilmemeli, `base` modülü altındaki `com.stream.base.model` paketinde toplanmalıdır. Böylece tüm `node-*` servisleri `import com.stream.base.model.*;` ile aynı tip güvenli sözleşmeleri paylaşır.

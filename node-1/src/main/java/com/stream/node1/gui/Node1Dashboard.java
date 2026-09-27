@@ -241,8 +241,11 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
             }
         });
 
-        JButton btnFetchHistory = new JButton("🔍 Geçmiş Bakımı Çek (Direct Get)");
+        JButton btnFetchHistory = new JButton("🔍 Son Bakımı Çek (Direct Get)");
         btnFetchHistory.addActionListener(e -> new Thread(app::checkHistoricalMaintenance).start());
+
+        JButton btnFetchAllHistory = new JButton("📜 Tüm Durum Geçmişini Listele");
+        btnFetchAllHistory.addActionListener(e -> new Thread(app::fetchAllHistoricalStatuses).start());
 
         JButton btnPublishAll = new JButton("📤 Manuel Yayınla (Tüm Konular)");
         btnPublishAll.addActionListener(e -> new Thread(app::publishAllMetrics).start());
@@ -259,6 +262,7 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         bar.add(btnBrake);
         bar.add(btnRadar);
         bar.add(btnFetchHistory);
+        bar.add(btnFetchAllHistory);
         bar.add(btnPublishAll);
         bar.add(btnClear);
         return bar;
