@@ -118,13 +118,29 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
 - **Neden:** `node-1`, `base` modülüne bağımlıdır. Çoklu modül projelerinde alt modüller henüz yerel Maven önbelleğine (`~/.m2/repository`) kurulmamışken tekil derlenirse Maven bağımlılığı bulamaz.
 - **Çözüm:** 
   - NetBeans Maven CLI (`mvn clean install`) kök `stream-mimari` projesi üzerinde çalıştırılarak reaktör sırasına göre (`stream-mimari` -> `base` -> `node-1`) tüm kütüphaneler yerel `.m2` deposuna derlendi ve kuruldu (`BUILD SUCCESS`).
-### [Adım 10] Tek Sınıf Başlatıcı (App.java) ve NetBeans Run Entegrasyonu
-- **Mimari Karar:** Gereksiz sınıf fazlalığını önlemek için ayrı bir `Main.java` yerine doğrudan [`App.java`](./node-1/src/main/java/com/stream/node1/App.java) ana başlatıcı sınıf olarak belirlendi.
-- **Yapılanlar:**
-  - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java) içerisindeki `public static void main(String[] args)` fonksiyonu güçlendirildi: Başlangıç/bitiş logları, JVM shutdown hook ve ana thread'in düşmesini engelleyen `join()` bekletmesi eklendi.
-  - [`node-1/pom.xml`](./node-1/pom.xml) içerisine `maven-jar-plugin` eklenerek üretilen JAR manifestine `Main-Class: com.stream.node1.App` damgalandı ve `exec.mainClass` olarak `App` tanımlandı.
-  - NetBeans IDE'nin F6/Run, Debug ve Profile kısayollarını doğrudan `App.java` üzerinden tetiklemesi için `node-1/nbactions.xml` yapılandırıldı.
-  - `stream-node-creator` becerisi (`SKILL.md`) yeni oluşturulacak düğümlerde de bu sade standardı uygulayacak şekilde senkronize edildi.
+### [Adım 11] NATS & JetStream Sunucu Yapılandırması (nats-server.conf)
+- **Hedef:** Çift katmanlı mimarinin (NATS Core + JetStream kalıcı hafıza ve Direct Get) ihtiyaç duyduğu sunucu altyapısını optimize bir konfigürasyonla hazır hale getirmek.
+- **Eklenen Dosyalar:**
+  - [`nats-server.conf`](./nats-server.conf): 
+    - `port: 4222` istemci portu.
+    - `http_port: 8222` HTTP izleme portu (`/varz`, `/jsz`, `/connz`).
+    - `jetstream { store_dir: "./nats-data", max_mem: 1G, max_file: 10G }` kalıcı durum hafızası.
+    - `max_payload: 8MB` telemetri ve JSON paket desteği.
+  - [`start-nats.bat`](./start-nats.bat) ve [`start-nats.ps1`](./start-nats.ps1): Tek tıkla NATS sunucusunu başlatan Windows betikleri.
+  - [`.gitignore`](./.gitignore): NATS çalışma zamanı verisi (`nats-data/`) ve loglar göz ardı edildi.
+
+### [Adım 12] node-1 Canlı Kontrol ve Mesajlaşma Gösterge Paneli (GUI)
+- **Hedef:** `node-1`'in anlık olarak yaptığı işlemleri (aldığı mesajlar, attığı mesajlar, geçmişten çektiği mesajlar) tek bir görsel pencerede canlı göstermek.
+- **Eklenen Bileşenler:**
+  - [`NodeActivityListener.java`](./node-1/src/main/java/com/stream/node1/gui/NodeActivityListener.java): `onMessageReceived`, `onMessageSent`, `onHistoricalRetrieved` ve `onStateChanged` arayüzü.
+  - [`Node1Dashboard.java`](./node-1/src/main/java/com/stream/node1/gui/Node1Dashboard.java): Swing tabanlı modern kontrol paneli:
+    - **Üst Panel:** Hız, devir, vites, yakıt, batarya, mod ve NATS canlı bağlantı durumu kartları.
+    - **Sekme 1 (📥 Alınan Mesajlar):** Dinlenen 4 topic'in canlı gelen verileri (Zaman, Katman, Topic, Payload).
+    - **Sekme 2 (📤 Atılan Mesajlar):** Yayınlanan 3 topic'in periyodik giden verileri (Zaman, Katman, Topic, Payload).
+    - **Sekme 3 (📜 Geçmişten Çekilen):** `stream.car.maintenance` konusunun JetStream geçmiş hafızasından doğrudan çekilen sıra no, zaman damgası ve kayıt detayları (Direct Get).
+    - **Sekme 4 (📋 Tüm Olay Günlüğü):** Konsol tarzı anlık olay akışı.
+    - **Alt Panel:** Hızlı simülasyon butonları (Gaz ver, Fren yap, Radar testi, Geçmişi çek, Manuel yayınla, Temizle).
+  - [`App.java`](./node-1/src/main/java/com/stream/node1/App.java): Başlatılırken masaüstü ortamında (`!GraphicsEnvironment.isHeadless()`) GUI'yi otomatik açacak şekilde bağlandı.
 
 ---
 
