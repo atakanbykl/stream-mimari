@@ -12,6 +12,7 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -244,5 +245,98 @@ public class StreamMemoryIntegrityTest {
         // Replay sonrası verilerin hala stream'de durduğunu son kez doğrula
         List<StreamRecord<VehicleStatus>> finalCheck = nodeA.getHistoricalRecords(TEST_SUBJECT, VehicleStatus.class);
         assertEquals(expectedCount, finalCheck.size(), "Tüm replay operasyonundan sonra dahi hafıza eksiksiz korunmalıdır.");
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("7. getLastMessageAsMessage io.nats.client.Message Tipi Döner ve ack/nak Güvenlidir")
+    public void testGetLastMessageAsMessageReturnsStandardMessage() throws Exception {
+        assumeTrue(isNatsAvailable, "NATS sunucusu aktif değil, test atlandı.");
+
+        // Direct Get ile son mesajı io.nats.client.Message olarak çek
+        Optional<Message> msgOpt = nodeA.getLastMessageAsMessage(TEST_SUBJECT);
+        assertTrue(msgOpt.isPresent(), "Son mesaj Message tipi olarak çekilebilmelidir.");
+
+        Message msg = msgOpt.get();
+        assertEquals(TEST_SUBJECT, msg.getSubject(), "Mesaj konusu eşleşmelidir.");
+        assertNotNull(msg.getData(), "Mesaj verisi boş olmamalıdır.");
+
+        // Veriyi deserialize edebildiğimizi doğrula
+        VehicleStatus status = nodeA.fromJson(msg.getData(), VehicleStatus.class);
+        assertNotNull(status, "Mesaj içeriği VehicleStatus modeline parse edilebilmelidir.");
+        assertTrue(status.fuelPercent > 0, "Yakıt yüzdesi geçerli olmalıdır.");
+
+        // ack() ve nak() çağrılarının Direct Get mesajında exception fırlatmadığını doğrula (safe NO-OP)
+        assertDoesNotThrow(() -> msg.ack(), "Direct Get mesajında ack() hatasız çalışmalıdır.");
+        assertDoesNotThrow(() -> msg.nak(), "Direct Get mesajında nak() hatasız çalışmalıdır.");
+
+        // KRİTİK DOĞRULAMA: Sunucuya iletilme zamanı (timestamp) ve sıra numarası (sequence) korunuyor mu?
+        assertTrue(msg.isJetStream(), "Direct Get mesajı JetStream meta verilerini taşımalıdır.");
+        assertNotNull(msg.metaData(), "metaData() null olmamalıdır.");
+        assertNotNull(msg.metaData().timestamp(), "Mesajın sunucuya iletilme zamanı (timestamp) eksiksiz korunmalıdır.");
+        assertTrue(msg.metaData().streamSequence() > 0, "Mesajın stream sıra numarası korunmalıdır.");
+        assertEquals(TEST_STREAM, msg.metaData().getStream(), "Stream adı korunmalıdır.");
+
+        // Başlıklar (Headers) üzerinden de zaman damgası ve sequence erişilebilir olmalıdır
+        assertTrue(msg.hasHeaders(), "Mesaj başlıkları bulunmalıdır.");
+        assertNotNull(msg.getHeaders().getFirst("Nats-Time-Stamp"), "Nats-Time-Stamp başlığı mevcut olmalıdır.");
+        assertNotNull(msg.getHeaders().getFirst("Nats-Sequence"), "Nats-Sequence başlığı mevcut olmalıdır.");
+
+        // JetStreamDirectMessage doğrudan casting ile ek kolaylık metotları
+        assertInstanceOf(JetStreamDirectMessage.class, msg, "Dönen mesaj JetStreamDirectMessage olmalıdır.");
+        JetStreamDirectMessage directMsg = (JetStreamDirectMessage) msg;
+        assertNotNull(directMsg.getTimestamp(), "directMsg.getTimestamp() doğrudan sunucu zamanını vermelidir.");
+        assertTrue(directMsg.getSequence() > 0, "directMsg.getSequence() stream sıra numarasını vermelidir.");
+
+        // Sequence üzerinden Message çekimini de doğrula
+        Optional<Message> seqMsgOpt = nodeA.getMessageBySequenceAsMessage(1L);
+        assertTrue(seqMsgOpt.isPresent(), "Sequence 1 için Message tipi çekilebilmelidir.");
+        assertNotNull(seqMsgOpt.get().metaData().timestamp(), "Sequence ile çekilen mesajın da zamanı korunmalıdır.");
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("8. subscribeStreamLiveWithLastJson Son Mesajı Anında Tetikler ve Canlı Dinlemeye Devam Eder")
+    public void testSubscribeStreamLiveWithLastJsonTriggersHandlerImmediatelyAndListensLive() throws Exception {
+        assumeTrue(isNatsAvailable, "NATS sunucusu aktif değil, test atlandı.");
+
+        String liveLastSubject = "stream.test.memory.livelast";
+
+        // 1. Önce geçmişe bir durum mesajı bırakalım
+        VehicleStatus initialStatus = new VehicleStatus(45.0, 55.0, 1200.0, 85.0);
+        nodeA.publishStreamJson(liveLastSubject, initialStatus);
+
+        CountDownLatch latch = new CountDownLatch(2);
+        List<VehicleStatus> receivedStatuses = new CopyOnWriteArrayList<>();
+
+        // 2. subscribeStreamLiveWithLastJson ile dinlemeye başlayalım:
+        // Geçmişteki initialStatus anında tetiklenmeli, ardından yeni canlı mesajı beklemeli.
+        JetStreamSubscription sub = nodeB.subscribeStreamLiveWithLastJson(
+                liveLastSubject,
+                VehicleStatus.class,
+                (status, msg) -> {
+                    receivedStatuses.add(status);
+                    msg.ack();
+                    latch.countDown();
+                },
+                false
+        );
+
+        // İlk mesaj anında (senkron veya milisaniyeler içinde) gelmiş olmalı
+        Thread.sleep(100);
+        assertFalse(receivedStatuses.isEmpty(), "Geçmişteki son mesaj abonelik başlar başlamaz handler'ı tetiklemiş olmalıdır.");
+        assertEquals(45.0, receivedStatuses.get(0).fuelPercent, "İlk gelen mesaj geçmişteki son kayıt olmalıdır.");
+
+        // 3. Şimdi yeni bir canlı mesaj yayınlayalım
+        VehicleStatus liveStatus = new VehicleStatus(46.0, 56.0, 1250.0, 86.0);
+        nodeA.publishStreamJson(liveLastSubject, liveStatus);
+
+        // Canlı mesajın da gelmesini bekle
+        boolean allReceived = latch.await(3, TimeUnit.SECONDS);
+        nodeB.unsubscribeStream(sub);
+
+        assertTrue(allReceived, "Hem geçmişteki son mesaj hem de yeni canlı mesaj handler tarafından teslim alınmalıdır.");
+        assertEquals(2, receivedStatuses.size(), "Toplam 2 mesaj teslim alınmış olmalıdır.");
+        assertEquals(46.0, receivedStatuses.get(1).fuelPercent, "İkinci gelen mesaj canlı yayınlanan yeni mesaj olmalıdır.");
     }
 }

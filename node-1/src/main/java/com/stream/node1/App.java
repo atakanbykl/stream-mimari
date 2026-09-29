@@ -184,13 +184,13 @@ public class App extends BaseNode {
         // [Dinleyici 2 - Core]: Ön radar sensörü
         subscribeCoreJson(topicRadar, RadarSensorData.class, this::handleRadarSensor);
 
-        // [Dinleyici 3 - JetStream Canlı]: Dış hava durumu (eski mesajları tekrar etmez)
+        // [Dinleyici 3 - JetStream Canlı + Son Mesaj]: Dış hava durumu (geçmişteki son durumu alıp ardından canlı dinler)
         boolean weatherAutoAck = config.getBoolean("subscribe.weather.auto.ack", true);
-        subscribeStreamLiveJson(topicWeather, WeatherCondition.class, this::handleWeatherUpdate, weatherAutoAck);
+        subscribeStreamLiveWithLastJson(topicWeather, WeatherCondition.class, this::handleWeatherUpdate, weatherAutoAck);
 
-        // [Dinleyici 4 - JetStream Canlı]: Şoför sürüş modu profili
+        // [Dinleyici 4 - JetStream Canlı + Son Mesaj]: Şoför sürüş modu profili (geçmişteki son profili alıp ardından canlı dinler)
         boolean profileAutoAck = config.getBoolean("subscribe.profile.auto.ack", true);
-        subscribeStreamLiveJson(topicProfile, DriverProfile.class, this::handleDriverProfile, profileAutoAck);
+        subscribeStreamLiveWithLastJson(topicProfile, DriverProfile.class, this::handleDriverProfile, profileAutoAck);
 
         log(String.format("4 farklı topic konfigürasyondan başarıyla dinlemeye alındı: [%s, %s, %s, %s]",
                 topicCommands, topicRadar, topicWeather, topicProfile));

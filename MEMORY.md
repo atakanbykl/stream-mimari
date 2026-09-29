@@ -187,13 +187,28 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
   - **GUI Entegrasyonu (`Node1Dashboard.java`):**
     - "📜 Tüm Durum Geçmişini Listele" butonu eklendi, Direct Get ile tüm geçmişin bozulmadan tekrar tekrar çekilebildiği görselleştirildi.
   - **Doğrulama ve Bütünlük Testleri (`StreamMemoryIntegrityTest.java`):**
-    - 6 aşamalı katı entegrasyon testi yazıldı ve NATS üzerinde çalıştırıldı:
+    - 8 aşamalı katı entegrasyon testi yazıldı ve NATS üzerinde çalıştırıldı:
       1. Stream konfigürasyonunun immutability garantileri doğrulandı.
       2. Yayınlanan mesajların sıra numaralarıyla biriktiği kanıtlandı.
       3. Bağımsız iki okuyucunun (Node A ve Node B) aynı geçmiş veriyi tahribatsız çektiği doğrulandı.
       4. `getHistoricalRecords` ile tüm kronolojinin çekildiği kanıtlandı.
       5. Tüketicilerin ACK vermesinin stream'den mesajları SİLMEDİĞİ kesin olarak kanıtlandı.
       6. `subscribeStreamReplay` ile geçmişin baştan sona eksiksiz oynatılabildiği ve verinin stream'de kaldığı doğrulandı.
+      7. `getLastMessageAsMessage` ile standart `Message` dönüşü ve ack/nak güvenliği doğrulandı.
+      8. `subscribeStreamLiveWithLastJson` ile geçmişteki son mesajın anında tetiklenmesi ve canlı dinlemeye devam edilmesi doğrulandı.
+
+### [Adım 10] Standart NATS Message Tipi Desteği ve Canlı + Son Mesaj Aboneliği (subscribeStreamLiveWithLast)
+- **Sorun:** `getLastMessage` ve `getMessageBySequence` metotları `MessageInfo` döndürdüğü için, canlı dinleyicilerde (`subscribeStreamLive` veya `subscribeStreamLiveJson`) kullanılan standart `MessageHandler` veya `StreamItemHandler<T>` fonksiyonlarına doğrudan parametre olarak aktarılamıyordu.
+- **Çözüm ve Mimari Geliştirme:**
+  1. **Tip Uyarlayıcısı (`toMessage`):** `BaseNode` içine `MessageInfo`'yu standart `io.nats.client.Message` arayüzüne çeviren `toMessage(info)` metodu eklendi. Üretilen mesaj nesnesi `NatsMessage` tabanlı olup üzerinde `ack()` veya `nak()` çağrıldığında Direct Get mesajı olduğu için güvenle NO-OP yapar, hata fırlatmaz.
+  2. **Standart Message Döndüren Metotlar:**
+     - `getLastMessageAsMessage(subject)` / `getLastMessageAsMessage(streamName, subject)`: `Optional<Message>` döner.
+     - `getMessageBySequenceAsMessage(sequence)` / `getMessageBySequenceAsMessage(streamName, sequence)`: `Optional<Message>` döner.
+  3. **Canlı + Son Mesaj Abonelikleri (Live With Last):**
+     - `subscribeStreamLiveWithLast(subject, handler, autoAck)`: Konunun geçmişteki son mesajını Direct Get ile çeker; varsa aynı `MessageHandler`'ı bu mesaj ile anında senkron tetikler, ardından `subscribeStreamLive` (`DeliverPolicy.New`) ile canlı akışı dinler.
+     - `subscribeStreamLiveWithLastJson(subject, Class<T>, handler, autoAck)`: Geçmişteki son mesajı JSON parse ederek `StreamItemHandler<T>`'ı `(payload, msg)` ile anında tetikler, ardından yeni canlı mesajları dinlemeye başlar.
+  4. **Servis Uyarlaması:** `node-1` servisinde `topicWeather` ve `topicProfile` dinleyicileri `subscribeStreamLiveWithLastJson`'a geçirildi; böylece araç marş aldığında son hava ve profil bilgisi varsa hafızadan anında yüklenir ve ardından canlı güncellemeleri almaya devam eder.
+  5. **Bütünlük Testleri:** `StreamMemoryIntegrityTest` içine Test 7 (`testGetLastMessageAsMessageReturnsStandardMessage`) ve Test 8 (`testSubscribeStreamLiveWithLastJsonTriggersHandlerImmediatelyAndListensLive`) eklendi ve NATS sunucusu üzerinde başarıyla doğrulandı.
 
 ---
 

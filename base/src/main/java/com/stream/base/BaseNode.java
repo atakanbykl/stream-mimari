@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.stream.base.config.NodeConfig;
 import io.nats.client.*;
 import io.nats.client.api.*;
+import io.nats.client.impl.NatsMessage;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -594,6 +595,44 @@ public abstract class BaseNode {
     }
 
     /**
+     * MessageInfo nesnesini standart NATS Message arayüzüne dönüştürür.
+     * Dönen JetStreamDirectMessage nesnesi; subject, payload, headers verilerini eksiksiz taşıdığı gibi,
+     * msg.metaData().timestamp() ile sunucuya kaydedilme zamanını, msg.metaData().streamSequence() ile
+     * stream sıra numarasını da korur. msg.ack() veya msg.nak() çağrıları ise güvenle NO-OP yapar.
+     *
+     * @param info JetStream Direct Get ile dönen MessageInfo nesnesi
+     * @return io.nats.client.Message implementasyonu (info null ise null)
+     */
+    public Message toMessage(MessageInfo info) {
+        if (info == null) {
+            return null;
+        }
+        return new JetStreamDirectMessage(info);
+    }
+
+    /**
+     * Belirtilen stream ve topic için geçmişteki son mesajı standart io.nats.client.Message olarak döner.
+     * Dönen Message nesnesi ack()/nak() güvenlidir (NO-OP) ve doğrudan bir MessageHandler'a aktarılabilir.
+     *
+     * @param streamName Stream adı
+     * @param subject İlgili konu
+     * @return Standart NATS Message sarmalayıcısı (varsa)
+     */
+    public Optional<Message> getLastMessageAsMessage(String streamName, String subject) {
+        return getLastMessage(streamName, subject).map(this::toMessage);
+    }
+
+    /**
+     * Stream adını otomatik çözümleyerek konunun geçmişteki son mesajını standart io.nats.client.Message olarak çeker.
+     *
+     * @param subject İlgili konu
+     * @return Standart NATS Message sarmalayıcısı (varsa)
+     */
+    public Optional<Message> getLastMessageAsMessage(String subject) {
+        return getLastMessage(subject).map(this::toMessage);
+    }
+
+    /**
      * Belirtilen stream ve sıra numarası (sequence) için geçmişteki mesajı doğrudan çeker.
      * Bu işlem Direct Get kullandığı için veriyi stream'den KESİNLİKLE SİLMEZ ve değiştirmez.
      *
@@ -639,6 +678,14 @@ public abstract class BaseNode {
             T payload = fromJson(msg.getData(), clazz);
             return new StreamRecord<>(payload, msg.getSeq(), msg.getTime(), msg.getSubject(), msg.getHeaders());
         });
+    }
+
+    public Optional<Message> getMessageBySequenceAsMessage(String streamName, long sequence) {
+        return getMessageBySequence(streamName, sequence).map(this::toMessage);
+    }
+
+    public Optional<Message> getMessageBySequenceAsMessage(long sequence) {
+        return getMessageBySequence(sequence).map(this::toMessage);
     }
 
     /**
@@ -791,6 +838,67 @@ public abstract class BaseNode {
                 }
             }
         }, autoAck);
+    }
+
+    /**
+     * JetStream CANLI Dinleme + Geçmişteki Son Mesajı Otomatik Tetikleme:
+     * 1. Önce Direct Get ile konunun geçmişteki en son mesajını sorgular (varsa).
+     * 2. Son mesaj varsa, verilen MessageHandler'ı bu mesaj ile anında senkron olarak tetikler.
+     * 3. Ardından subscribeStreamLive (DeliverPolicy.New) başlatır ve yeni canlı olayları dinlemeye başlar.
+     *
+     * @param subject Dinlenecek konu (stream.>)
+     * @param handler Mesaj işleyici
+     * @param autoAck Otomatik ACK verilsin mi (canlı mesajlar için)
+     * @return JetStreamSubscription abonelik nesnesi
+     */
+    public JetStreamSubscription subscribeStreamLiveWithLast(String subject, MessageHandler handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
+        ensureJetStream();
+
+        // 1. Varsa son mesajı geçmişten çek ve handler'ı tetikle
+        getLastMessageAsMessage(subject).ifPresent(msg -> {
+            try {
+                handler.onMessage(msg);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log(String.format("subscribeStreamLiveWithLast kesildi ('%s'): %s", subject, e.getMessage()));
+            } catch (Exception e) {
+                log(String.format("subscribeStreamLiveWithLast son mesaj handler hatası ('%s'): %s", subject, e.getMessage()));
+            }
+        });
+
+        // 2. Canlı dinlemeyi başlat (DeliverPolicy.New)
+        return subscribeStreamLive(subject, handler, autoAck);
+    }
+
+    /**
+     * JetStream CANLI JSON Dinleme + Geçmişteki Son Mesajı Otomatik Tetikleme:
+     * 1. Önce Direct Get ile konunun geçmişteki son mesajını sorgular (varsa).
+     * 2. Son mesaj varsa, JSON'dan parse ederek StreamItemHandler'ı (payload, msg) ile tetikler.
+     * 3. Ardından subscribeStreamLiveJson (DeliverPolicy.New) başlatır.
+     *
+     * @param subject Dinlenecek konu (stream.>)
+     * @param clazz Model sınıfı
+     * @param handler JSON ve Message işleyici
+     * @param autoAck Otomatik ACK
+     * @return JetStreamSubscription abonelik nesnesi
+     */
+    public <T> JetStreamSubscription subscribeStreamLiveWithLastJson(String subject, Class<T> clazz, StreamItemHandler<T> handler, boolean autoAck) throws IOException, JetStreamApiException {
+        validateStreamSubject(subject);
+        ensureJetStream();
+
+        // 1. Varsa son mesajı geçmişten çek ve handler'ı tetikle
+        getLastMessageAsMessage(subject).ifPresent(msg -> {
+            try {
+                T obj = fromJson(msg.getData(), clazz);
+                handler.handle(obj, msg);
+            } catch (Exception e) {
+                log(String.format("subscribeStreamLiveWithLastJson son mesaj handler hatası ('%s'): %s", subject, e.getMessage()));
+            }
+        });
+
+        // 2. Canlı JSON dinlemeyi başlat (DeliverPolicy.New)
+        return subscribeStreamLiveJson(subject, clazz, handler, autoAck);
     }
 
     /**
