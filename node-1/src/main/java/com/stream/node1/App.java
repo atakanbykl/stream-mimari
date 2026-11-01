@@ -2,6 +2,7 @@ package com.stream.node1;
 
 import com.stream.base.BaseNode;
 import com.stream.base.StreamRecord;
+import com.stream.base.TopicAggregator;
 import com.stream.base.model.*;
 import com.stream.node1.gui.Node1Dashboard;
 import com.stream.node1.gui.NodeActivityListener;
@@ -10,6 +11,7 @@ import io.nats.client.Message;
 import javax.swing.SwingUtilities;
 import java.awt.GraphicsEnvironment;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -77,6 +79,9 @@ public class App extends BaseNode {
     private final double radarEmergencyDistance;
     private final double radarEmergencySpeed;
 
+    // Çoklu Topic Birleştirici (TopicAggregator Demo)
+    private final TopicAggregator demoAggregator;
+
     // Periyodik yayınlayıcı zamanlayıcı
     private ScheduledExecutorService scheduler;
 
@@ -112,6 +117,13 @@ public class App extends BaseNode {
 
         // 3. EKSİK VEYA HATALI PARAMETRELERİ ENFORCE ET (Hata varsa kullanıcıya modal popup açıp kapatır)
         config.validateAndEnforce("node-1 (Otomobil ECU)");
+
+        // 4. ÇOKLU TOPIC BİRLEŞTİRİCİ (Hiçbir ek config gerektirmeden doğrudan topic'ler ve callback verilir)
+        this.demoAggregator = createTopicAggregator(
+                250,
+                this::publishMergedState,
+                topicCommands, topicRadar, topicWeather, topicProfile
+        );
     }
 
     @Override
@@ -223,6 +235,7 @@ public class App extends BaseNode {
             }
             default -> log("Bilinmeyen komut tipi: " + cmd.action);
         }
+        demoAggregator.update(topicCommands, cmd);
         fireStateChanged();
     }
 
@@ -247,6 +260,7 @@ public class App extends BaseNode {
             publishCoreJson(topicAlerts, alert);
             fireMessageSent(topicAlerts, "NATS Core", alert);
         }
+        demoAggregator.update(topicRadar, radar);
         fireStateChanged();
     }
 
@@ -255,9 +269,10 @@ public class App extends BaseNode {
      * İŞ MANTIĞI: Yol kaygan veya buzlu ise çekiş kontrolünü (ESP) ayarlar.
      */
     public void handleWeatherUpdate(WeatherCondition weather, Message msg) {
-        this.currentWeather = weather;
         log(String.format("[İŞ MANTIĞI - HAVA DURUMU] Güncel yol koşulu: %s, Kayganlık: %b", weather.condition, weather.slipperyRoad));
         fireMessageReceived(topicWeather, "JetStream", weather);
+
+        demoAggregator.update(topicWeather, weather, () -> this.currentWeather = weather);
 
         if (weather.slipperyRoad || "ICY".equals(weather.condition)) {
             log("Yol kaygan: ESP çekiş kontrolü maksimum güvenlik moduna geçirildi.");
@@ -272,11 +287,89 @@ public class App extends BaseNode {
      * Handler 4 (JetStream): Şoför profilini işler.
      */
     public void handleDriverProfile(DriverProfile profile, Message msg) {
-        this.activeProfile = profile;
         log(String.format("[İŞ MANTIĞI - PROFİL] Sürüş modu değişti: %s, Maksimum Hız Sınırı: %.0f km/h",
                 profile.mode, profile.speedLimitKmh));
         fireMessageReceived(topicProfile, "JetStream", profile);
+
+        demoAggregator.update(topicProfile, profile, () -> this.activeProfile = profile);
         fireStateChanged();
+    }
+
+    // =========================================================================
+    // 1.B ÇOKLU TOPIC BİRLEŞTİRİCİ (TOPIC AGGREGATOR DEMO METOTLARI)
+    // =========================================================================
+
+    /**
+     * Birleştirici (Çakışma, N/N Tam Set veya Timeout) tetiklendiğinde çalışan sade yayın metodu.
+     */
+    private void publishMergedState() {
+        Map<String, Object> mergedData = demoAggregator.getAll();
+        String outTopic = "stream.car.merged";
+
+        log(String.format("🔗 [BİRLEŞİK YAYIN #%d] '%s' konusuna tek seferde yayınlandı -> %s",
+                demoAggregator.getFlushCount(), outTopic, mergedData.keySet()));
+
+        if (isConnected()) {
+            try {
+                publishStreamJson(outTopic, mergedData);
+            } catch (Exception e) {
+                log("Birleşik yayın hatası: " + e.getMessage());
+            }
+        }
+        fireMessageSent(outTopic, "Aggregator", mergedData);
+    }
+
+    /**
+     * DEMO 1 (4/4 Tam Set Bariyer Simülasyonu):
+     * 4 farklı topic arka arkaya gönderildiğinde birleşik topic'in 4 kere değil,
+     * 4/4 bariyer dolduğu anda 0ms bekleme ile SADECE 1 KERE (FULL_BARRIER) yayınlandığını gösterir.
+     */
+    public void simulateFullSetBurstDemo() {
+        log(">>> [DEMO-1 BAŞLADI] 4 farklı topic arka arkaya gönderiliyor (Beklenen: 4 ayrı yayın yerine SADECE 1 FULL_BARRIER birleşik yayın) <<<");
+        DriverCommand cmd = new DriverCommand("ACCELERATE", 55.0, "Demo-Burst-1");
+        RadarSensorData radar = new RadarSensorData(45.0, -5.0, false);
+        WeatherCondition weather = new WeatherCondition("RAINY", 14.5, true);
+        DriverProfile profile = new DriverProfile("SPORT", 200.0, true);
+
+        if (isConnected()) {
+            try {
+                publishCoreJson(topicCommands, cmd);
+                publishCoreJson(topicRadar, radar);
+                publishStreamJson(topicWeather, weather);
+                publishStreamJson(topicProfile, profile);
+            } catch (Exception e) {
+                log("Demo-1 yayın hatası: " + e.getMessage());
+            }
+        } else {
+            handleDriverCommand(cmd);
+            handleRadarSensor(radar);
+            handleWeatherUpdate(weather, null);
+            handleDriverProfile(profile, null);
+        }
+    }
+
+    /**
+     * DEMO 2 (Üst Üste Çakışma / Collision-Flush Simülasyonu):
+     * Diğer topic'ler gelmeden T1 (topicCommands) üst üste 3 kez gönderildiğinde:
+     * - 2. T1 geldiğinde 1. T1'in ezilmeden anında COLLISION olarak yayınlandığını,
+     * - 3. T1 geldiğinde 2. T1'in ezilmeden anında COLLISION olarak yayınlandığını,
+     * - 3. T1'in ise diğer 3 topic'i beklediğini (veya timeout sonunda yayınlandığını) gösterir.
+     */
+    public void simulateCollisionBurstDemo() {
+        log(">>> [DEMO-2 BAŞLADI] T1 (Komut) konusu diğerleri gelmeden üst üste 3 kez gönderiliyor (Beklenen: Öncekiler COLLISION ile korunup yayınlanır) <<<");
+        DriverCommand cmd1 = new DriverCommand("ACCELERATE", 30.0, "Demo-Collision-T1-v1");
+        DriverCommand cmd2 = new DriverCommand("ACCELERATE", 65.0, "Demo-Collision-T1-v2");
+        DriverCommand cmd3 = new DriverCommand("BRAKE", 25.0, "Demo-Collision-T1-v3");
+
+        if (isConnected()) {
+            publishCoreJson(topicCommands, cmd1);
+            publishCoreJson(topicCommands, cmd2);
+            publishCoreJson(topicCommands, cmd3);
+        } else {
+            handleDriverCommand(cmd1);
+            handleDriverCommand(cmd2);
+            handleDriverCommand(cmd3);
+        }
     }
 
     // =========================================================================
@@ -454,6 +547,7 @@ public class App extends BaseNode {
     public String getTopicProfile() { return topicProfile; }
     public String getTopicMaintenance() { return topicMaintenance; }
     public int getPublishIntervalMs() { return publishIntervalMs; }
+    public TopicAggregator getDemoAggregator() { return demoAggregator; }
 
     // =========================================================================
     // ANA ÇALIŞTIRICI METOT (MAIN ENTRY POINT)

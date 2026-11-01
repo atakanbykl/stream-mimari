@@ -51,6 +51,7 @@ public abstract class BaseNode {
     // Aktif abonelik kayıtları
     private final Map<String, Subscription> coreSubscriptions = new ConcurrentHashMap<>();
     private final Map<String, JetStreamSubscription> streamSubscriptions = new ConcurrentHashMap<>();
+    private final List<TopicAggregator> topicAggregators = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     // Bilinen stream isimleri ve eşleşen topic önbelleği
     private final Set<String> knownStreams = ConcurrentHashMap.newKeySet();
@@ -106,9 +107,17 @@ public abstract class BaseNode {
     }
 
     /**
-     * Düğümü durdurur. Tüm Core/Stream aboneliklerini ve NATS bağlantısını temizler.
+     * Düğümü durdurur. Tüm Core/Stream aboneliklerini, TopicAggregator zamanlayıcılarını ve NATS bağlantısını temizler.
      */
     public synchronized void stop() {
+        // start() çağrılmamış olsa bile oluşturulmuş TopicAggregator zamanlayıcılarını temizle
+        for (TopicAggregator agg : topicAggregators) {
+            try {
+                agg.close();
+            } catch (Exception ignored) {}
+        }
+        topicAggregators.clear();
+
         if (running.compareAndSet(true, false)) {
             log("Durduruluyor...");
             try {
@@ -1030,6 +1039,22 @@ public abstract class BaseNode {
                 log("JetStream aboneliği kaldırılırken hata: " + e.getMessage());
             }
         }
+    }
+
+    // =========================================================================
+    // 5. ÇOKLU TOPIC BİRLEŞTİRME (TOPIC AGGREGATOR)
+    // =========================================================================
+
+    public TopicAggregator createTopicAggregator(long timeoutMs, Runnable onFlush, String... topics) {
+        TopicAggregator aggregator = new TopicAggregator(timeoutMs, onFlush, topics);
+        topicAggregators.add(aggregator);
+        return aggregator;
+    }
+
+    public TopicAggregator createTopicAggregator(long timeoutMs, Runnable onFlush, Collection<String> topics) {
+        TopicAggregator aggregator = new TopicAggregator(timeoutMs, onFlush, topics);
+        topicAggregators.add(aggregator);
+        return aggregator;
     }
 
     // =========================================================================

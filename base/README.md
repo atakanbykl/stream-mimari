@@ -60,7 +60,15 @@ Tüm `node-*` projelerinin extend edeceği çekirdek kütüphanedir.
 - `toJson()`, `fromJson()`: Dahili Gson desteği.
 - `log(message)`: `[nodeId] mesaj` formatında loglama.
 
-### 5. Ortak Model Kütüphanesi (`com.stream.base.model.*`)
+### 5. Çoklu Topic Birleştirme (`TopicAggregator` - $2 \dots \infty$ Dinamik Fan-In / Join)
+- `createTopicAggregator(windowTimeoutMs, onFlush, topics...)`: En az 2, üst sınırı olmaksızın ($N \ge 2$) dinamik sayıda topic'ten gelen verileri birleştirip tek bir topic olarak yayınlamak için durum makinesi oluşturur.
+  1. **Çakışma Anında Flush (`FlushReason.COLLISION`):** Aktif pencerede henüz $N$ topic tamamlanmadan, zaten gelmiş olan bir topic (ör. `T1`) 2. veya 3. kez tekrar gelirse; yeni değer eski değerin üzerine yazılmadan **ÖNCE** mevcut pencere derhal yayına çıkarılır. Ardından yeni değer kaydedilip yeni pencere başlatılır (veri kaybı %100 önlenir).
+  2. **Tam Set Bariyeri (`FlushReason.FULL_BARRIER`):** Beklenen $N$ farklı topic'in tamamından birer güncelleme ulaştığı anda zamanlayıcı beklenmez (0ms gecikme) ve anında yayın yapılır.
+  3. **Zaman Aşımı (`FlushReason.TIMEOUT`):** $N$ topic'in tamamı gelmezse `windowTimeoutMs` sonunda mevcut durum birleştirilip tek sefer yayınlanır.
+- `aggregateStreamTopicsJson(...)` / `aggregateCoreTopicsJson(...)`: `NodeConfig.getRequiredTopicList(...)` ile dış konfigürasyondan okunan topic listesini otomatik dinleyip birleştirir.
+- Sıfır statik durum içerir; aynı veya farklı node'larda farklı topic grupları için sınırsız sayıda bağımsız `TopicAggregator` örneği çalıştırılabilir.
+
+### 6. Ortak Model Kütüphanesi (`com.stream.base.model.*`)
 Tüm `node-*` projeleri `base` modülünü bağımlılık olarak aldığı için ortak veri sözleşmelerine doğrudan erişebilir:
 - `TelemetryData`: Canlı telemetri (hız, devir, gaz, vites).
 - `VehicleStatus`: Kalıcı durum (yakıt, batarya, kilometre, sıcaklık).

@@ -165,4 +165,29 @@ public class AppTest {
             com.stream.base.config.ConfigErrorHandler.exitOnFatalError = true;
         }
     }
+
+    @Test
+    public void testFullSetBurstDemoEmitsSingleAggregatedMessage() {
+        App app = new App();
+        try {
+            app.simulateFullSetBurstDemo();
+            assertEquals(1L, app.getDemoAggregator().getFlushCount(),
+                    "4 farklı topic arka arkaya geldiğinde sadece 1 kez birleşik yayın çıkmalıdır.");
+        } finally {
+            app.stop();
+        }
+    }
+
+    @Test
+    public void testCollisionBurstDemoFlushesPreviousValuesImmediately() {
+        App app = new App();
+        try {
+            // T1 (topicCommands) üst üste 3 kez gönderilir -> İlk 2'si çakışma ile anında çıkmalı, 3.'sü pencerede beklemeli
+            app.simulateCollisionBurstDemo();
+            assertEquals(2L, app.getDemoAggregator().getFlushCount(),
+                    "Üst üste 3 T1 geldiğinde önceki 2 T1 ezilmeden anında yayınlanmalıdır.");
+        } finally {
+            app.stop();
+        }
+    }
 }

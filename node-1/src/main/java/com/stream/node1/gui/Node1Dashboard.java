@@ -250,6 +250,14 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         JButton btnPublishAll = new JButton("📤 Manuel Yayınla (Tüm Konular)");
         btnPublishAll.addActionListener(e -> new Thread(app::publishAllMetrics).start());
 
+        JButton btnBurstDemo = new JButton("🔗 4'lü Set Demo (Bariyer -> 1 Yayın)");
+        btnBurstDemo.setToolTipText("4 farklı topic arka arkaya atıldığında birleşik topic'in 4 kere değil SADECE 1 KERE (FULL_BARRIER) çıktığını test eder");
+        btnBurstDemo.addActionListener(e -> new Thread(app::simulateFullSetBurstDemo).start());
+
+        JButton btnCollisionDemo = new JButton("⚡ Çakışma Demo (T1 Üst Üste)");
+        btnCollisionDemo.setToolTipText("Diğerleri gelmeden T1 üst üste 3 kez geldiğinde önceki verilerin ezilmeden COLLISION olarak iletildiğini test eder");
+        btnCollisionDemo.addActionListener(e -> new Thread(app::simulateCollisionBurstDemo).start());
+
         JButton btnClear = new JButton("🧹 Tabloları Temizle");
         btnClear.addActionListener(e -> {
             modelReceived.setRowCount(0);
@@ -261,6 +269,8 @@ public class Node1Dashboard extends JFrame implements NodeActivityListener {
         bar.add(btnAccelerate);
         bar.add(btnBrake);
         bar.add(btnRadar);
+        bar.add(btnBurstDemo);
+        bar.add(btnCollisionDemo);
         bar.add(btnFetchHistory);
         bar.add(btnFetchAllHistory);
         bar.add(btnPublishAll);

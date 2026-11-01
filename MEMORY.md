@@ -210,6 +210,18 @@ stream-mimari/                               <-- Kök Dizin & Parent POM (packag
   4. **Servis Uyarlaması:** `node-1` servisinde `topicWeather` ve `topicProfile` dinleyicileri `subscribeStreamLiveWithLastJson`'a geçirildi; böylece araç marş aldığında son hava ve profil bilgisi varsa hafızadan anında yüklenir ve ardından canlı güncellemeleri almaya devam eder.
   5. **Bütünlük Testleri:** `StreamMemoryIntegrityTest` içine Test 7 (`testGetLastMessageAsMessageReturnsStandardMessage`) ve Test 8 (`testSubscribeStreamLiveWithLastJsonTriggersHandlerImmediatelyAndListensLive`) eklendi ve NATS sunucusu üzerinde başarıyla doğrulandı.
 
+### [Adım 11] Basitleştirilmiş Çoklu Topic Birleştirici (`TopicAggregator`: $2 \dots \infty$ Topic, Çakışma-Flush + $N/N$ Bariyer + Timeout)
+- **Sorun:** $N$ farklı topic'ten (ör. 4 ayrı konudan) gelen verilerin birleştirilerek tek bir birleşik topic olarak yayınlandığı senaryolarda, arka arkaya gelen mesajlarda birleşik topic'in $N$ kez gereksiz yayınlanması veya üst üste gelen aynı topic verisinin ezilerek kaybolması riski.
+- **Çözüm ve Mimari Geliştirme (Config bağımsız, ultra sade API):**
+  1. **`TopicAggregator` (`com.stream.base.TopicAggregator`):**
+     - `createTopicAggregator(timeoutMs, Runnable onFlush, String... topics)` ile tek satırda oluşturulur; config'den ekstra parametre okumaz.
+     - `update(topic, newValue)` veya `update(topic, stateSetter)`:
+       - Aktif pencerede aynı topic tekrar gelirse (**Çakışma**), yeni veri eski veriyi ezmeden **ÖNCE** mevcut pencere derhal `onFlush` ile yayınlanır.
+       - Beklenen $N$ farklı topic tamamlandığında (**Tam Set Bariyeri**), `timeoutMs` beklenmeden anında `onFlush` tetiklenir.
+       - Eksik kalan topic varsa `timeoutMs` sonunda mevcut durum yayınlanır.
+     - `get(topic)` ve `getAll()` ile birleşik güncel değerler okunur.
+  2. **Demo Entegrasyonu (`node-1`):** `App.java`, `Node1Dashboard.java` ve `AggregatorDemoRunner.java` üzerinde 4/4 Tam Set ve T1 Üst Üste Çakışma demoları entegre edildi.
+
 ---
 
 ## 4. Kodlama ve Mesajlaşma Standartları
